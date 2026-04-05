@@ -63,7 +63,7 @@
             {#each sim.scenarios as scenario}
               <option
                 value={scenario.name}
-                selected={scenario.name === "gang_scheduling"}
+                selected={scenario.name === "production_scale"}
               >
                 {scenario.name} — {scenario.description}
               </option>

@@ -3,11 +3,8 @@
   import { escapeHtml, chipColor } from "./lib/api";
   import HomeScreen from "./components/HomeScreen.svelte";
   import Header from "./components/Header.svelte";
-  import Sidebar from "./components/Sidebar.svelte";
   import ClusterGrid from "./components/ClusterGrid.svelte";
   import ScaleView from "./components/ScaleView.svelte";
-
-  const isLarge = $derived(sim.parsedView?.isLargeScale ?? false);
 
   let tooltipVisible = $state(false);
   let tooltipX = $state(0);
@@ -43,10 +40,6 @@
   });
 
   function handleMouseMove(e: MouseEvent) {
-    if (isLarge) {
-      tooltipVisible = false;
-      return;
-    }
     const target = (e.target as HTMLElement).closest(
       ".chip[data-pod], .queue-item[data-pod]",
     ) as HTMLElement | null;
@@ -84,7 +77,6 @@
   }
 
   function handleClick(e: MouseEvent) {
-    if (isLarge) return;
     const target = (e.target as HTMLElement).closest(
       ".chip[data-pod], .queue-item[data-pod]",
     ) as HTMLElement | null;
@@ -92,11 +84,6 @@
       const podName = target.getAttribute("data-pod")!;
       const gangGroup = target.closest(".gang-group");
       sim.handlePodClick(podName, gangGroup);
-    } else if (
-      !(e.target as HTMLElement).closest("header") &&
-      !(e.target as HTMLElement).closest("aside")
-    ) {
-      sim.clearSmallScaleSelection();
     }
   }
 
@@ -109,7 +96,7 @@
     if (!sim.frames.length) return;
 
     // Shift+1..4: chip type selection (works even in input)
-    if (e.shiftKey && isLarge && e.key >= "1" && e.key <= "4") {
+    if (e.shiftKey && e.key >= "1" && e.key <= "4") {
       const idx = Number(e.key) - 1;
       if (idx < chipTypeKeys.length) {
         e.preventDefault();
@@ -133,9 +120,10 @@
     } else if (e.code === "ArrowLeft") {
       e.preventDefault();
       sim.stepPrev();
-    } else if (e.code === "Escape" && isLarge) {
+    } else if (e.code === "Escape") {
       e.preventDefault();
-      if (sim.selectedWorkload) sim.selectWorkload(null);
+      if (sim.selectedCluster) sim.selectCluster(null);
+      else if (sim.selectedWorkload) sim.selectWorkload(null);
       else if (sim.selectedQuota) sim.selectQuota(null);
       else if (sim.selectedChipType) sim.selectChipType(null);
     }
@@ -148,15 +136,28 @@
 <div onmousemove={handleMouseMove} onclick={handleClick}>
   <HomeScreen />
   <Header />
-  {#if isLarge}
-    <ScaleView />
-  {:else}
-    <div class="layout">
-      <Sidebar />
+  {#if sim.selectedCluster}
+    <div class="cluster-drill">
+      <div class="cluster-drill-bar">
+        <button class="cluster-back" onclick={() => sim.selectCluster(null)}
+          >&larr; Back</button
+        >
+        <div class="cluster-pill-row">
+          {#each sim.parsedView?.clusters ?? [] as c}
+            <button
+              class="sv-pill"
+              class:active={sim.selectedCluster === c.name}
+              onclick={() => sim.selectCluster(c.name)}>{c.name}</button
+            >
+          {/each}
+        </div>
+      </div>
       <main id="clusters">
-        <ClusterGrid />
+        <ClusterGrid filterCluster={sim.selectedCluster} />
       </main>
     </div>
+  {:else}
+    <ScaleView />
   {/if}
 </div>
 

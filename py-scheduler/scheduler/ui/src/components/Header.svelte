@@ -2,7 +2,6 @@
   import { sim } from "../lib/state.svelte";
   import { chipColor } from "../lib/api";
 
-  const isLarge = $derived(sim.parsedView?.isLargeScale ?? false);
   const chips = $derived(sim.parsedView?.chipFree ?? []);
 </script>
 
@@ -31,6 +30,7 @@
         max={Math.max(sim.frames.length - 1, 0)}
         value={sim.sliderValue}
         disabled={!sim.frames.length || (sim.frameBusy && !sim.sliderDragging)}
+        title="Scrub through solver frames"
         style="flex:1;"
         onpointerdown={() => sim.handleSliderPointerDown()}
         oninput={(e) =>
@@ -39,28 +39,36 @@
       <div class="frame-counter">{sim.counterText}</div>
     </div>
 
-    {#if isLarge && chips.length}
+    <div class="meta">
+      {#each [sim.statRunningText, sim.statQueuedText, sim.statUtilText].filter((t) => t && t !== "--") as text, i}
+        {#if i > 0}<span class="meta-sep">&bull;</span>{/if}
+        <span>{text}</span>
+      {/each}
+    </div>
+
+    {#if chips.length}
       <div class="hdr-chips">
         {#each chips as c}
           <button
             class="hdr-chip"
             class:active={sim.selectedChipType === c.chipType}
             style="color:{chipColor(c.chipType)}"
-            onclick={() => sim.selectChipType(c.chipType)}
+            title="{c.chipType}: {c.free.toLocaleString()} free"
+            onclick={() =>
+              sim.selectChipType(
+                sim.selectedChipType === c.chipType ? null : c.chipType,
+              )}
           >
             {c.chipType}: {c.free.toLocaleString()} free
           </button>
         {/each}
       </div>
-    {:else if !isLarge}
-      <div class="meta">
-        {#each [sim.statRunningText, sim.statQueuedText, sim.statUtilText].filter((t) => t && t !== "--") as text, i}
-          {#if i > 0}<span class="meta-sep">&bull;</span>{/if}
-          <span>{text}</span>
-        {/each}
-      </div>
     {/if}
 
-    <button class="btn" onclick={() => sim.openHome()}>Home</button>
+    <button
+      class="btn"
+      title="Return to the home screen"
+      onclick={() => sim.openHome()}>Home</button
+    >
   </div>
 </header>

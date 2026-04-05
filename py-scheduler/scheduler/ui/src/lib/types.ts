@@ -102,6 +102,7 @@ export interface Job {
   placedReplicas: number;
   gangIdx: number | null;
   gangMembers: string[];
+  borrowing: boolean;
 }
 
 export interface DeploymentGroup {
@@ -114,6 +115,7 @@ export interface DeploymentGroup {
   pending: number;
   total: number;
   clusterCounts: Record<string, number>;
+  borrowing: boolean;
 }
 
 export type Workload =

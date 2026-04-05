@@ -51,14 +51,16 @@
     <h3>Config</h3>
     <div class="gen-grid">
       <div class="gen-field">
-        <label>Seed</label><input
+        <label title="RNG seed for reproducible job generation">Seed</label
+        ><input
           type="number"
           bind:value={sim.genForm.seed}
           oninput={markDirty}
         />
       </div>
       <div class="gen-field">
-        <label>Arrival rate</label><input
+        <label title="Average jobs submitted per second">Arrival rate</label
+        ><input
           type="number"
           step="0.01"
           bind:value={sim.genForm.arrival_rate}
@@ -66,7 +68,9 @@
         />
       </div>
       <div class="gen-field">
-        <label>Burst factor</label><input
+        <label title="Multiplier for periodic traffic spikes"
+          >Burst factor</label
+        ><input
           type="number"
           step="0.1"
           bind:value={sim.genForm.burst_factor}
@@ -74,7 +78,7 @@
         />
       </div>
       <div class="gen-field">
-        <label>Loop interval</label><input
+        <label title="Seconds between solver ticks">Loop interval</label><input
           type="number"
           step="0.1"
           bind:value={sim.genForm.loop_interval_seconds}
@@ -82,35 +86,41 @@
         />
       </div>
       <div class="gen-field">
-        <label>Priority min</label><input
+        <label title="Lowest priority assigned to generated jobs"
+          >Priority min</label
+        ><input
           type="number"
           bind:value={sim.genForm.priority_min}
           oninput={markDirty}
         />
       </div>
       <div class="gen-field">
-        <label>Priority max</label><input
+        <label title="Highest priority assigned to generated jobs"
+          >Priority max</label
+        ><input
           type="number"
           bind:value={sim.genForm.priority_max}
           oninput={markDirty}
         />
       </div>
       <div class="gen-field">
-        <label>Replica min</label><input
+        <label title="Minimum replicas per generated job">Replica min</label
+        ><input
           type="number"
           bind:value={sim.genForm.replica_min}
           oninput={markDirty}
         />
       </div>
       <div class="gen-field">
-        <label>Replica max</label><input
+        <label title="Maximum replicas per generated job">Replica max</label
+        ><input
           type="number"
           bind:value={sim.genForm.replica_max}
           oninput={markDirty}
         />
       </div>
       <div class="gen-field">
-        <label>Runtime min</label><input
+        <label title="Shortest job runtime in seconds">Runtime min</label><input
           type="number"
           step="1"
           bind:value={sim.genForm.runtime_min}
@@ -118,7 +128,7 @@
         />
       </div>
       <div class="gen-field">
-        <label>Runtime max</label><input
+        <label title="Longest job runtime in seconds">Runtime max</label><input
           type="number"
           step="1"
           bind:value={sim.genForm.runtime_max}
@@ -126,7 +136,9 @@
         />
       </div>
       <div class="gen-field">
-        <label>Gang freq</label><input
+        <label title="Fraction of jobs generated as gang-scheduled (0–1)"
+          >Gang freq</label
+        ><input
           type="number"
           step="0.01"
           bind:value={sim.genForm.gang_frequency}
@@ -134,7 +146,8 @@
         />
       </div>
       <div class="gen-field">
-        <label>Replica fail</label><input
+        <label title="Probability a replica fails each tick">Replica fail</label
+        ><input
           type="number"
           step="0.01"
           bind:value={sim.genForm.replica_failure_rate}
@@ -142,7 +155,8 @@
         />
       </div>
       <div class="gen-field">
-        <label>Node fail</label><input
+        <label title="Probability a node fails each tick">Node fail</label
+        ><input
           type="number"
           step="0.01"
           bind:value={sim.genForm.node_failure_rate}
@@ -150,7 +164,9 @@
         />
       </div>
       <div class="gen-field">
-        <label>Node recover</label><input
+        <label title="Probability a failed node recovers each tick"
+          >Node recover</label
+        ><input
           type="number"
           step="0.01"
           bind:value={sim.genForm.node_recovery_rate}
@@ -158,21 +174,22 @@
         />
       </div>
       <div class="gen-field full">
-        <label>Quota weights</label><textarea
-          bind:value={sim.genForm.quota_weights}
-          oninput={markDirty}
+        <label title="JSON object mapping quota names to relative weights"
+          >Quota weights</label
+        ><textarea bind:value={sim.genForm.quota_weights} oninput={markDirty}
         ></textarea>
       </div>
       <div class="gen-field full">
-        <label>Chip weights</label><textarea
-          bind:value={sim.genForm.chip_weights}
-          oninput={markDirty}
+        <label title="JSON object mapping chip types to relative weights"
+          >Chip weights</label
+        ><textarea bind:value={sim.genForm.chip_weights} oninput={markDirty}
         ></textarea>
       </div>
       <div class="gen-field full">
-        <label>Chips/replica weights</label><textarea
-          bind:value={sim.genForm.chips_weights}
-          oninput={markDirty}
+        <label
+          title="JSON object mapping chips-per-replica counts to relative weights"
+          >Chips/replica weights</label
+        ><textarea bind:value={sim.genForm.chips_weights} oninput={markDirty}
         ></textarea>
       </div>
     </div>

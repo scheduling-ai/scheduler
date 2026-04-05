@@ -9,6 +9,7 @@
     <button
       class="sidebar-tab"
       class:active={sim.activeTab === "queue"}
+      title="Pending workloads waiting for resources"
       onclick={() => (sim.activeTab = "queue")}
     >
       Queue <span class="tab-badge">{sim.parsedView?.queue.length ?? 0}</span>
@@ -17,6 +18,7 @@
       <button
         class="sidebar-tab"
         class:active={sim.activeTab === "generator"}
+        title="Configure the synthetic workload generator"
         onclick={() => {
           sim.activeTab = "generator";
           if (!sim.genPolling) sim.startGenPolling();

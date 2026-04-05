@@ -216,7 +216,7 @@ function parseFrame(frame: Frame | null): ParsedView | null {
     const cpr = pod.chips_per_replica || 1;
     const inGang =
       (gangSetMembers.get(podToIdx.get(podName) || 0)?.size || 0) > 1;
-    const isJob = replicas > 1 || cpr > 1 || inGang;
+    const isJob = inGang;
     const quotaName = pod.quota || "default";
     const chipType = pod.chip_type || "";
 
@@ -262,6 +262,7 @@ function parseFrame(frame: Frame | null): ParsedView | null {
         placedReplicas: placed,
         gangIdx: gIdx,
         gangMembers: gMembers,
+        borrowing: false,
       });
     } else {
       let prefix = podName.includes("-")
@@ -269,7 +270,7 @@ function parseFrame(frame: Frame | null): ParsedView | null {
         : podName;
       if (!prefix) prefix = podName;
 
-      const dKey = `${quotaName}\0${chipType}\0${pod.priority || 0}\0${cpr}`;
+      const dKey = `${prefix}\0${quotaName}\0${chipType}\0${pod.priority || 0}\0${cpr}`;
       const existing = deployAgg.get(dKey);
       if (existing) {
         existing.running += placed;
@@ -309,22 +310,11 @@ function parseFrame(frame: Frame | null): ParsedView | null {
         pending: d.pending,
         total: d.running + d.pending,
         clusterCounts: cc,
+        borrowing: false,
       };
     },
   );
   deployments.sort((a, b) => b.total - a.total);
-
-  const workloads: Workload[] = [
-    ...jobs.map((j): Workload => ({ kind: "job", ...j })),
-    ...deployments.map((d): Workload => ({ kind: "deployment", ...d })),
-  ];
-  workloads.sort((a, b) => {
-    if (a.kind === "job" && b.kind === "job")
-      return b.priority - a.priority || a.name.localeCompare(b.name);
-    if (a.kind === "deployment" && b.kind === "deployment")
-      return b.total - a.total;
-    return a.kind === "job" ? -1 : 1;
-  });
 
   const chipFreeMap = new Map<string, { free: number; total: number }>();
   for (const [k, cap] of poolCap) {
@@ -362,6 +352,30 @@ function parseFrame(frame: Frame | null): ParsedView | null {
     for (const [cl, ctMap] of Object.entries(q.guarantees || {}))
       for (const [ct, chips] of Object.entries(ctMap))
         quotaClusterGuarantee.set(`${q.name}\0${cl}\0${ct}`, chips);
+
+  // Compute borrowing status for jobs and deployments
+  for (const j of jobs) {
+    const guaranteed = quotaGuarantees.get(j.quota)?.get(j.chipType) || 0;
+    const used = quotaChipUsed.get(`${j.quota}\0${j.chipType}`) || 0;
+    j.borrowing = guaranteed > 0 && used > guaranteed;
+  }
+  for (const d of deployments) {
+    const guaranteed = quotaGuarantees.get(d.quota)?.get(d.chipType) || 0;
+    const used = quotaChipUsed.get(`${d.quota}\0${d.chipType}`) || 0;
+    d.borrowing = guaranteed > 0 && used > guaranteed;
+  }
+
+  const workloads: Workload[] = [
+    ...jobs.map((j): Workload => ({ kind: "job", ...j })),
+    ...deployments.map((d): Workload => ({ kind: "deployment", ...d })),
+  ];
+  workloads.sort((a, b) => {
+    if (a.kind === "job" && b.kind === "job")
+      return b.priority - a.priority || a.name.localeCompare(b.name);
+    if (a.kind === "deployment" && b.kind === "deployment")
+      return b.total - a.total;
+    return a.kind === "job" ? -1 : 1;
+  });
 
   const quotaNames = new Set<string>();
   for (const pod of Object.values(frame.pods || {}))
@@ -502,7 +516,7 @@ class SimState {
   fps = $state(5);
   currentMode = $state<"none" | "replay" | "live">("none");
   currentSource = $state<"none" | "live" | "scenario" | "file">("none");
-  currentScenarioName = $state("");
+  currentScenarioName = $state("production_scale");
   currentSessionUrl = $state("");
   liveScheduler = $state("heuristic");
   replayRunSolver = $state(true);
@@ -514,6 +528,7 @@ class SimState {
   selectedQuota = $state<string | null>(null);
   selectedWorkload = $state<string | null>(null);
   selectedChipType = $state<string | null>(null);
+  selectedCluster = $state<string | null>(null);
   globalSearch = $state("");
   solvedFrames = $state<Record<number, Frame>>({});
   frameBusy = $state(false);
@@ -688,7 +703,6 @@ class SimState {
   selectQuota(name: string | null) {
     this.selectedQuota = this.selectedQuota === name ? null : name;
     this.selectedWorkload = null;
-    this.selectedChipType = null;
   }
 
   selectWorkload(name: string | null) {
@@ -699,14 +713,12 @@ class SimState {
       );
       if (job) {
         this.selectedQuota = job.quota;
-        this.selectedChipType = null;
       } else {
         const dep = this.parsedView.deployments.find(
           (d) => d.id === this.selectedWorkload,
         );
         if (dep) {
           this.selectedQuota = dep.quota;
-          this.selectedChipType = null;
         }
       }
     }
@@ -714,8 +726,11 @@ class SimState {
 
   selectChipType(ct: string | null) {
     this.selectedChipType = this.selectedChipType === ct ? null : ct;
-    this.selectedQuota = null;
     this.selectedWorkload = null;
+  }
+
+  selectCluster(name: string | null) {
+    this.selectedCluster = name;
   }
 
   clearSelection() {
@@ -724,6 +739,7 @@ class SimState {
     this.selectedQuota = null;
     this.selectedWorkload = null;
     this.selectedChipType = null;
+    this.selectedCluster = null;
   }
 
   clearSmallScaleSelection() {

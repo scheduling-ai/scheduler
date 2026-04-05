@@ -1,6 +1,14 @@
 <script lang="ts">
   import { sim } from "../lib/state.svelte";
   import { chipColor } from "../lib/api";
+
+  let { filterCluster = null }: { filterCluster?: string | null } = $props();
+
+  const visibleClusters = $derived(
+    filterCluster
+      ? (sim.parsedView?.clusters ?? []).filter((c) => c.name === filterCluster)
+      : (sim.parsedView?.clusters ?? []),
+  );
 </script>
 
 {#if sim.clusterCaption}
@@ -9,10 +17,10 @@
 
 {#if !sim.parsedView}
   <div class="empty-state">Load a replay or connect to the live simulator.</div>
-{:else if !sim.parsedView.clusters.length}
+{:else if !visibleClusters.length}
   <div class="empty-state">No cluster data in this frame.</div>
 {:else}
-  {#each sim.parsedView.clusters as cluster}
+  {#each visibleClusters as cluster}
     <section class="cluster">
       <div class="cluster-header">{cluster.name}</div>
       <div class="nodes">
@@ -25,7 +33,9 @@
                   style="color:{chipColor(node.chipType)}">{node.chipType}</span
                 >
               </div>
-              <div class="node-frac">{node.used}/{node.capacity}</div>
+              <div class="node-frac" title="Chips in use / total capacity">
+                {node.used}/{node.capacity}
+              </div>
             </div>
             <div class="node-chips">
               {#each node.segments as segment}
