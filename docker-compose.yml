@@ -1,0 +1,42 @@
+services:
+  scheduler-ui:
+    build:
+      context: .
+    user: "${UID:-1000}:${GID:-1000}"
+    command: ["uv", "run", "--frozen", "--no-sync", "scheduler-ui"]
+    ports:
+      - "8000:8000"
+    depends_on:
+      loop-runner-service:
+        condition: service_healthy
+    environment:
+      SENTRY_DSN: ${SENTRY_DSN}
+      GIT_SHA: ${GIT_SHA:-dev}
+    volumes:
+      - ./.scheduler-live-state:/data/live-state
+    restart: always
+    networks:
+      main:
+        aliases:
+          - scheduler-ui
+
+  loop-runner-service:
+    build:
+      context: .
+    user: "${UID:-1000}:${GID:-1000}"
+    command: ["uv", "run", "--frozen", "--no-sync", "loop-runner"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import glob, os, time; files = glob.glob('/data/live-state/latest-*.json'); assert files and time.time() - max(os.path.getmtime(f) for f in files) < 30"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    environment:
+      SENTRY_DSN: ${SENTRY_DSN}
+      GIT_SHA: ${GIT_SHA:-dev}
+    volumes:
+      - ./.scheduler-live-state:/data/live-state
+    restart: always
+
+networks:
+  main: {}

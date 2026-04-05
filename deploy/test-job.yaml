@@ -1,0 +1,38 @@
+# Test Job that uses our custom scheduler.
+# Submit via the scheduler API:
+#   curl -X POST http://scheduler:8080/jobs -H 'Content-Type: application/json' -d "$(yq -o=json test-job.yaml)"
+#
+# The scheduler will:
+# 1. Hold this Job in its central store (spec.suspend: true).
+# 2. When the solver places it, create it on the target cluster with
+#    node affinity injected and spec.suspend: false.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: test-gpu-job
+  labels:
+    accelerator: h100
+    scheduler.example.com/job-name: test-gpu-job
+  annotations:
+    scheduler.example.com/priority: "0"
+    scheduler.example.com/quota: "default"
+spec:
+  suspend: true
+  parallelism: 2
+  completions: 2
+  template:
+    spec:
+      tolerations:
+        - key: scheduler
+          operator: Equal
+          value: custom
+          effect: NoSchedule
+      containers:
+        - name: busybox
+          image: busybox
+          command: ["sleep", "3600"]
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+      restartPolicy: Never

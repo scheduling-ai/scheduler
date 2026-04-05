@@ -1,0 +1,16 @@
+{
+  // Python
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}/py-scheduler"
+  ],
+  "python.terminal.activateEnvironment": false,
+  // General
+  "editor.formatOnSave": true,
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/.pytest_cache": true,
+    "**/.ruff_cache": true,
+    "**/target": true
+  },
+  "claudeCode.allowDangerouslySkipPermissions": true
+}

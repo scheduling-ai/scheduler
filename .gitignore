@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+
+# Rust
+target/
+
+# Deploy
+.env
+
+# Docs (added separately)
+docs/
+
+# Simulator live state
+.scheduler-live-state
+
+# UI (Svelte/Vite)
+py-scheduler/scheduler/ui/node_modules/
+py-scheduler/scheduler/ui/dist/

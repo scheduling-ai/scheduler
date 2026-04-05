@@ -1,0 +1,52 @@
+[project]
+name = "scheduler"
+version = "0.1.0"
+description = "Multi-cluster GPU job scheduler"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "highspy>=1.13.1",
+    "numpy>=2.4.2",
+    "pyomo>=6.10.0",
+    "sentry-sdk>=2.55.0",
+    "typer>=0.16.0",
+]
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["uv_build>=0.7.19"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = "py-scheduler"
+
+[project.scripts]
+scheduler-ui = "scheduler.server:main"
+loop-runner = "scheduler.loop_runner:main"
+
+[dependency-groups]
+dev = [
+    "kubernetes>=32.0.1",
+    "playwright>=1.58.0",
+    "pytest>=9.0.2",
+    "requests>=2.31",
+    "ruff>=0.15.5",
+    "ty>=0.0.21",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["py-scheduler/tests"]
+pythonpath = ["py-scheduler"]
+markers = [
+    "e2e: end-to-end tests requiring kind clusters and compiled Rust binary",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ty.environment]
+extra-paths = ["py-scheduler"]
+
+[tool.ty.src]
+exclude = []

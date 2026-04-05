@@ -1,0 +1,7 @@
+# Kind cluster A: 1 worker for H100 GPU simulation.
+# Keep to 1 worker to reduce Docker resource pressure in CI / constrained envs.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+  - role: worker

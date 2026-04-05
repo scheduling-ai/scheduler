@@ -1,0 +1,13 @@
+# Minimal kind cluster for scheduler development.
+# Creates a control plane + 3 workers to simulate multi-node scheduling.
+#
+# Usage:
+#   kind create cluster --config kind-config.yaml --name scheduler-dev
+#   kind delete cluster --name scheduler-dev
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker
+  - role: worker

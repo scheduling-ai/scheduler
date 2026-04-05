@@ -1,0 +1,157 @@
+version: 2.1
+
+orbs:
+  node: circleci/node@7.1.0
+  rust: circleci/rust@1.6.1
+
+jobs:
+  check-python:
+    docker:
+      - image: cimg/python:3.13
+    steps:
+      - checkout
+      - run:
+          name: Install uv
+          command: curl -LsSf https://astral.sh/uv/install.sh | sh
+      - run:
+          name: Ruff format check
+          command: uv run ruff format --check py-scheduler/ e2e/
+      - run:
+          name: Ruff lint
+          command: uv run ruff check py-scheduler/ e2e/
+      - run:
+          name: Type check
+          command: uv run ty check
+
+  check-ui:
+    docker:
+      - image: cimg/node:22.14
+    steps:
+      - checkout
+      - run:
+          name: Install dependencies
+          command: npm ci
+          working_directory: py-scheduler/scheduler/ui
+      - run:
+          name: Format check
+          command: npm run format:check
+          working_directory: py-scheduler/scheduler/ui
+      - run:
+          name: Svelte check
+          command: npm run check
+          working_directory: py-scheduler/scheduler/ui
+      - run:
+          name: Build
+          command: npm run build
+          working_directory: py-scheduler/scheduler/ui
+
+  check-rust:
+    docker:
+      - image: cimg/rust:1.93
+    steps:
+      - checkout
+      - rust/clippy:
+          flags: --workspace -- -D warnings
+      - run:
+          name: Format check
+          command: cargo fmt --all -- --check
+
+  test-python:
+    docker:
+      - image: cimg/python:3.13
+    steps:
+      - checkout
+      - run:
+          name: Install uv
+          command: curl -LsSf https://astral.sh/uv/install.sh | sh
+      - run:
+          name: Run tests
+          command: uv run pytest -m "not e2e"
+
+  build-rust:
+    docker:
+      - image: cimg/rust:1.93
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - cargo-{{ checksum "Cargo.lock" }}
+            - cargo-
+      - run:
+          name: Build
+          command: cargo build --workspace
+      - run:
+          name: Test
+          command: cargo test --workspace
+      - save_cache:
+          key: cargo-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.cargo/registry
+            - ~/.cargo/git
+            - target
+
+  check-deploy:
+    machine:
+      image: ubuntu-2404:current
+    steps:
+      - checkout
+      - run:
+          name: Validate compose config
+          command: docker compose config
+      - run:
+          name: Build Docker image
+          command: docker build -t scheduler-ci .
+
+  test-e2e:
+    machine:
+      image: ubuntu-2404:current
+    steps:
+      - checkout
+      - run:
+          name: Install Rust toolchain
+          command: |
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> "$BASH_ENV"
+      - restore_cache:
+          keys:
+            - cargo-release-{{ checksum "Cargo.lock" }}
+            - cargo-release-
+      - run:
+          name: Build Rust (release)
+          command: cargo build --release
+      - save_cache:
+          key: cargo-release-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.cargo/registry
+            - ~/.cargo/git
+            - target
+      - run:
+          name: Install uv
+          command: curl -LsSf https://astral.sh/uv/install.sh | sh
+      - run:
+          name: Install kind
+          command: |
+            curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+            chmod +x ./kind
+            sudo mv ./kind /usr/local/bin/kind
+      - run:
+          name: Install kubectl
+          command: |
+            curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+            chmod +x kubectl
+            sudo mv kubectl /usr/local/bin/kubectl
+      - run:
+          name: Run e2e tests
+          command: uv run pytest e2e/ -v -m e2e --tb=short
+          no_output_timeout: 15m
+
+workflows:
+  presubmit-and-test:
+    jobs:
+      - check-python
+      - check-ui
+      - check-rust
+      - test-python
+      - build-rust
+      - check-deploy
+      - test-e2e

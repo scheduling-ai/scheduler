@@ -1,0 +1,8 @@
+# Kind cluster B: control-plane-only for A100 GPU simulation.
+# No separate worker node to reduce Docker resource pressure (3 containers
+# total across both clusters instead of 4). The control-plane taint is removed
+# by conftest.py after creation so it can accept workloads.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane

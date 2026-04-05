@@ -1,0 +1,20 @@
+services:
+  scheduler-ui:
+    ports: !override
+      - target: 8000
+
+  pomerium:
+    image: pomerium/pomerium:latest
+    ports:
+      - "443:443"
+    restart: always
+    environment:
+      POMERIUM_ZERO_TOKEN: ${POMERIUM_ZERO_TOKEN}
+      XDG_CACHE_HOME: /var/cache
+    volumes:
+      - pomerium-cache:/var/cache
+    networks:
+      main: {}
+
+volumes:
+  pomerium-cache:

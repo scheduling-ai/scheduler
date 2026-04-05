@@ -1,0 +1,16 @@
+[
+  {
+    "name": "team-train",
+    "guarantees": {
+      "cluster-a": {"h100": 4},
+      "cluster-b": {"a100": 4}
+    }
+  },
+  {
+    "name": "team-serve",
+    "guarantees": {
+      "cluster-a": {"h100": 0},
+      "cluster-b": {"a100": 0}
+    }
+  }
+]
