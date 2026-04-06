@@ -93,11 +93,16 @@ def test_pod_resubmit_during_suspension(scheduler, k8s_clients):
     resp = submit_pod(scheduler, build_pod("victim", "h100", priority=1))
     assert resp.status_code == 201
 
-    # Delete the bully from k8s to free capacity.
+    # Let the binder run 2-3 cycles so the generation counter race plays out.
+    # If the counter is broken, the old victim's cleanup removes the new entry.
+    time.sleep(12)
+
+    # Now free capacity by removing bully from both store and k8s.
+    delete_workload(scheduler, "bully")
     delete_k8s_workload(k8s_clients, "bully")
 
-    # The new victim should eventually be placed once bully's capacity is freed.
-    # If the generation=0 race causes it to be silently removed from the store,
+    # The new victim should be placed once bully's capacity is freed.
+    # If the generation race caused it to be silently removed from the store,
     # it will stay queued forever (or disappear entirely).
     wait_for(
         lambda: (
