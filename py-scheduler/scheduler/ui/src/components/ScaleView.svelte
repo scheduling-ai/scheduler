@@ -451,8 +451,7 @@
     </div>
   {/if}
 
-  <!-- ═══ KANBAN ═══ -->
-  <div class="sv-kanban">
+  <div class="sv-columns">
     {#each [{ label: "Running", entries: runningCol, count: runningCount }, { label: "Pending", entries: pendingCol, count: pendingCount }] as col}
       <div class="sv-column">
         <div class="sv-col-header">

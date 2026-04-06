@@ -1352,8 +1352,8 @@ main {
   font-weight: 600;
 }
 
-/* ═══ Kanban layout ═══ */
-.sv-kanban {
+/* ═══ Column layout ═══ */
+.sv-columns {
   display: grid;
   grid-template-columns: 1fr 1fr;
   flex: 1;
