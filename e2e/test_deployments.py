@@ -265,7 +265,8 @@ def test_preempted_deployment_pod_reschedules(scheduler, k8s_clients):
         desc="replica-0 suspended",
     )
 
-    # Free capacity.
+    # Free capacity by removing hog from both store and k8s.
+    delete_workload(scheduler, "hog")
     delete_k8s_workload(k8s_clients, "hog")
 
     # Deployment pod should be re-placed.
