@@ -1683,34 +1683,25 @@ main {
   margin-bottom: 5px;
 }
 .sv-event {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
   font-size: 12px;
   color: var(--text-dim);
-  padding: 2px 0;
+  padding: 2px 4px;
+  background: none;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.sv-event:hover {
+  background: rgba(22, 50, 67, 0.6);
+  color: var(--text);
 }
 .sv-event-time {
   color: var(--accent-2);
   margin-right: 6px;
   font-size: 11px;
   opacity: 0.7;
-}
-.sv-event.placeholder {
-  opacity: 0.45;
-}
-.sv-events-badge {
-  font-size: 9px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  padding: 1px 5px;
-  border-radius: 3px;
-  background: rgba(245, 158, 11, 0.2);
-  color: rgba(245, 158, 11, 0.8);
-  vertical-align: middle;
-  margin-left: 4px;
-}
-.sv-events-wip {
-  font-size: 11px;
-  color: var(--text-dim);
-  opacity: 0.35;
-  font-style: italic;
-  margin-top: 4px;
 }

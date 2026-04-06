@@ -237,6 +237,41 @@
     };
   });
 
+  function eventTimeLabel(e: {
+    seq: number | null;
+    timestamp: string | null;
+    frame: number;
+  }): string {
+    const parts: string[] = [];
+    if (e.seq != null) parts.push(`seq ${e.seq}`);
+    if (e.timestamp) {
+      try {
+        parts.push(new Date(e.timestamp).toLocaleTimeString());
+      } catch {
+        /* ignore bad timestamps */
+      }
+    }
+    return parts.length ? parts.join(" · ") : `t=${e.frame}`;
+  }
+
+  const jobEvents = $derived.by(() => {
+    if (!selW || !jobDetail) return [];
+    return sim.jobHistory(jobDetail.name);
+  });
+
+  const deployEvents = $derived.by(() => {
+    if (!selW || !deployDetail) return [];
+    const idParts = deployDetail.id.split("\0");
+    const cpr = idParts.length >= 5 ? Number(idParts[4]) || 1 : 1;
+    return sim.deploymentHistory(
+      deployDetail.prefix,
+      deployDetail.quota,
+      deployDetail.chipType,
+      deployDetail.priority,
+      cpr,
+    );
+  });
+
   function handleSearchKeydown(e: KeyboardEvent) {
     if (e.key === "Enter") {
       e.preventDefault();
@@ -585,19 +620,20 @@
                     {/each}
                   </div>
                 {/if}
-                <div class="sv-events">
-                  <h5>Events <span class="sv-events-badge">demo</span></h5>
-                  <div class="sv-event placeholder">
-                    <span class="sv-event-time">t=42</span> Admitted — placed on us-central1-a
+                {#if jobEvents.length}
+                  <div class="sv-events">
+                    <h5>History</h5>
+                    {#each jobEvents as ev}
+                      <button
+                        class="sv-event"
+                        onclick={() => sim.requestFrame(ev.frame)}
+                      >
+                        <span class="sv-event-time">{eventTimeLabel(ev)}</span>
+                        {ev.status}
+                      </button>
+                    {/each}
                   </div>
-                  <div class="sv-event placeholder">
-                    <span class="sv-event-time">t=67</span> Preempted — borrowed quota
-                    reclaimed
-                  </div>
-                  <div class="sv-events-wip">
-                    Placeholder — real event tracking coming soon
-                  </div>
-                </div>
+                {/if}
               </div>
             {:else if sel && w.kind === "deployment" && deployDetail}
               <div class="sv-card">
@@ -644,20 +680,20 @@
                     {/each}
                   </div>
                 {/if}
-                <div class="sv-events">
-                  <h5>Events <span class="sv-events-badge">demo</span></h5>
-                  <div class="sv-event placeholder">
-                    <span class="sv-event-time">t=12</span> Scaled to 4 replicas —
-                    demand spike
+                {#if deployEvents.length}
+                  <div class="sv-events">
+                    <h5>History</h5>
+                    {#each deployEvents as ev}
+                      <button
+                        class="sv-event"
+                        onclick={() => sim.requestFrame(ev.frame)}
+                      >
+                        <span class="sv-event-time">{eventTimeLabel(ev)}</span>
+                        {ev.running}/{ev.total} running
+                      </button>
+                    {/each}
                   </div>
-                  <div class="sv-event placeholder">
-                    <span class="sv-event-time">t=30</span> Replica migrated — node
-                    drain on eu-west1-b
-                  </div>
-                  <div class="sv-events-wip">
-                    Placeholder — real event tracking coming soon
-                  </div>
-                </div>
+                {/if}
               </div>
             {/if}
           {/each}

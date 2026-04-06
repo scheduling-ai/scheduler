@@ -747,11 +747,22 @@ class SimState {
     this.selectedGangIdx = null;
   }
 
-  jobHistory(jobName: string): { frame: number; status: string }[] {
-    const events: { frame: number; status: string }[] = [];
+  jobHistory(jobName: string): {
+    frame: number;
+    seq: number | null;
+    timestamp: string | null;
+    status: string;
+  }[] {
+    const events: {
+      frame: number;
+      seq: number | null;
+      timestamp: string | null;
+      status: string;
+    }[] = [];
     let lastStatus = "absent";
     for (let i = 0; i < this.frames.length; i++) {
-      const pod = this.frames[i]?.pods?.[jobName];
+      const f = this.frames[i];
+      const pod = f?.pods?.[jobName];
       let status = "absent";
       if (pod) {
         const placed = (pod.statuses_by_replica || []).some((r) => r.node);
@@ -763,8 +774,70 @@ class SimState {
         else status = "pending";
       }
       if (i === 0 || status !== lastStatus) {
-        events.push({ frame: i, status });
+        events.push({
+          frame: i,
+          seq: f?.seq ?? null,
+          timestamp: f?.timestamp ?? null,
+          status,
+        });
         lastStatus = status;
+      }
+    }
+    return events;
+  }
+
+  deploymentHistory(
+    prefix: string,
+    quota: string,
+    chipType: string,
+    priority: number,
+    chipsPerReplica: number,
+  ): {
+    frame: number;
+    seq: number | null;
+    timestamp: string | null;
+    running: number;
+    total: number;
+  }[] {
+    const events: {
+      frame: number;
+      seq: number | null;
+      timestamp: string | null;
+      running: number;
+      total: number;
+    }[] = [];
+    let lastKey = "";
+    for (let i = 0; i < this.frames.length; i++) {
+      const f = this.frames[i];
+      let running = 0;
+      let total = 0;
+      for (const [podName, pod] of Object.entries(f?.pods ?? {})) {
+        const p = podName.includes("-")
+          ? podName.substring(0, podName.lastIndexOf("-"))
+          : podName;
+        if (
+          p !== prefix ||
+          (pod.quota || "default") !== quota ||
+          (pod.chip_type || "") !== chipType ||
+          (pod.priority || 0) !== priority ||
+          (pod.chips_per_replica || 1) !== chipsPerReplica
+        )
+          continue;
+        for (const r of pod.statuses_by_replica || []) {
+          total++;
+          if (r.node) running++;
+        }
+      }
+      const key = `${running}/${total}`;
+      if (i === 0 || key !== lastKey) {
+        events.push({
+          frame: i,
+          seq: f?.seq ?? null,
+          timestamp: f?.timestamp ?? null,
+          running,
+          total,
+        });
+        lastKey = key;
       }
     }
     return events;
