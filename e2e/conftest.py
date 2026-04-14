@@ -240,26 +240,56 @@ def delete_k8s_workload(k8s_clients: dict, name: str) -> None:
 
     The scheduler API only removes from its internal store. Once a workload is
     placed on a cluster, it must be deleted from k8s directly to free capacity.
-    Also removes from the scheduler store (best-effort).
+    Waits for objects to actually disappear so the reflector sees freed capacity.
     """
     label = f"{JOB_NAME_LABEL}={name}"
+    found_any = False
     for cluster_name, apis in k8s_clients.items():
         try:
             jobs = apis["batch"].list_namespaced_job("default", label_selector=label)
             for job in jobs.items:
+                found_any = True
                 apis["batch"].delete_namespaced_job(
                     job.metadata.name,
                     "default",
-                    body=client.V1DeleteOptions(propagation_policy="Foreground"),
+                    body=client.V1DeleteOptions(
+                        propagation_policy="Background",
+                        grace_period_seconds=0,
+                    ),
                 )
         except Exception:
             pass
         try:
             pods = apis["core"].list_namespaced_pod("default", label_selector=label)
             for pod in pods.items:
-                apis["core"].delete_namespaced_pod(pod.metadata.name, "default")
+                found_any = True
+                apis["core"].delete_namespaced_pod(
+                    pod.metadata.name,
+                    "default",
+                    body=client.V1DeleteOptions(grace_period_seconds=0),
+                )
         except Exception:
             pass
+
+    if not found_any:
+        return
+
+    # Wait for objects to actually disappear so the reflector sees freed capacity.
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        all_gone = True
+        for cluster_name, apis in k8s_clients.items():
+            try:
+                jobs = apis["batch"].list_namespaced_job("default", label_selector=label)
+                pods = apis["core"].list_namespaced_pod("default", label_selector=label)
+                if jobs.items or pods.items:
+                    all_gone = False
+                    break
+            except Exception:
+                pass
+        if all_gone:
+            break
+        time.sleep(1)
 
 
 def get_status(sched: Scheduler, name: str) -> dict | None:
