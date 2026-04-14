@@ -4,6 +4,11 @@
   let fileInput: HTMLInputElement;
   let dragover = $state(false);
 
+  const scenarioDescription = $derived(
+    sim.scenarios.find((s) => s.name === sim.currentScenarioName)
+      ?.description ?? "",
+  );
+
   function onDrop(e: DragEvent) {
     e.preventDefault();
     dragover = false;
@@ -65,11 +70,14 @@
                 value={scenario.name}
                 selected={scenario.name === "production_scale"}
               >
-                {scenario.name} — {scenario.description}
+                {scenario.name}
               </option>
             {/each}
           </select>
         </div>
+        {#if scenarioDescription}
+          <p class="scenario-desc">{scenarioDescription}</p>
+        {/if}
         <div class="control-group">
           <label for="home-scenario-solver">Solver</label>
           <select

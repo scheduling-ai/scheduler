@@ -939,6 +939,13 @@ main {
   line-height: 1.5;
 }
 
+.home-card p.scenario-desc {
+  font-size: 12px;
+  line-height: 1.4;
+  margin-top: -8px;
+  opacity: 0.85;
+}
+
 .drop-target {
   min-height: 180px;
   display: flex;

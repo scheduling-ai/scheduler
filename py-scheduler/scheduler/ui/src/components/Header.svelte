@@ -15,7 +15,7 @@
     const frame = sim.displayFrame;
     if (!frame) return "--";
     if (sim.currentMode === "live")
-      return `${frame.summary?.running_jobs || 0} running`;
+      return `${(frame.summary?.running_jobs || 0).toLocaleString()} replicas running`;
     const pv = sim.parsedView;
     if (!pv) return "--";
     const placed = pv.clusters.reduce(
@@ -27,17 +27,17 @@
         ),
       0,
     );
-    return `${placed} placed`;
+    return `${placed.toLocaleString()} replicas placed`;
   });
 
   const statQueuedText = $derived.by(() => {
     const frame = sim.displayFrame;
     if (!frame) return "--";
     if (sim.currentMode === "live")
-      return `${frame.summary?.queued_jobs || 0} queued`;
+      return `${(frame.summary?.queued_jobs || 0).toLocaleString()} replicas queued`;
     const pv = sim.parsedView;
     if (!pv) return "--";
-    return `${pv.queue.reduce((s, q) => s + q.queued, 0)} queued`;
+    return `${pv.queue.reduce((s, q) => s + q.queued, 0).toLocaleString()} replicas queued`;
   });
 
   const statUtilText = $derived.by(() => {
