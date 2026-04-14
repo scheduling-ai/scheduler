@@ -1,0 +1,79 @@
+# Scheduler service account + RBAC for the k8s-bridge.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: scheduler
+  namespace: scheduler-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: scheduler-reader
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: scheduler-reader
+subjects:
+  - kind: ServiceAccount
+    name: scheduler
+    namespace: scheduler-system
+roleRef:
+  kind: ClusterRole
+  name: scheduler-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: scheduler-workload-manager
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: scheduler-workload-manager
+subjects:
+  - kind: ServiceAccount
+    name: scheduler
+    namespace: scheduler-system
+roleRef:
+  kind: ClusterRole
+  name: scheduler-workload-manager
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: scheduler-impersonator
+rules:
+  - apiGroups: [""]
+    resources: ["users"]
+    verbs: ["impersonate"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: scheduler-impersonator
+subjects:
+  - kind: ServiceAccount
+    name: scheduler
+    namespace: scheduler-system
+roleRef:
+  kind: ClusterRole
+  name: scheduler-impersonator
+  apiGroup: rbac.authorization.k8s.io
