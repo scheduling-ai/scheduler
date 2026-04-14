@@ -1,0 +1,9 @@
+{
+  "demo": "Tiny three-cluster fixture used in unit tests and tutorials.",
+  "failure_storm": "Multiple node failures within one window — exercises recovery and re-placement.",
+  "gang_scheduling": "Cross-cluster gang with linked worker, eval, and metric pods.",
+  "multi_cluster_ramp": "Inference traffic ramps up and spreads across regions.",
+  "node_drain": "A cordon-and-drain on one node; pods migrate to siblings.",
+  "preemption_cascade": "High-priority arrival forces a chain of suspensions.",
+  "production_scale": "Steady-state production fleet (15 clusters, ~20k GPUs, ~30 quotas) walking through a node failure, a large training arrival forcing reclaim, and a completion."
+}

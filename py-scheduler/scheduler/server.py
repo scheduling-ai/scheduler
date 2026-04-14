@@ -77,7 +77,17 @@ def make_handler(
             # Scenario index
             if path == "/scenarios/index.json":
                 names = sorted(p.stem for p in SCENARIO_DIR.glob("*.jsonl"))
-                _json_response(self, [{"name": n} for n in names])
+                desc_file = SCENARIO_DIR / "descriptions.json"
+                descriptions: dict[str, str] = {}
+                if desc_file.exists():
+                    try:
+                        descriptions = json.loads(desc_file.read_text())
+                    except (json.JSONDecodeError, OSError):
+                        pass
+                _json_response(
+                    self,
+                    [{"name": n, "description": descriptions.get(n, "")} for n in names],
+                )
                 return
 
             # Solver list
