@@ -2,21 +2,8 @@
   import { sim } from "../lib/state.svelte";
   import { chipColor } from "../lib/api";
   import type { Workload, Job, DeploymentGroup } from "../lib/types";
-
-  let searchEl: HTMLInputElement;
-  let localSearch = $state("");
-  let searchTimer: ReturnType<typeof setTimeout> | null = null;
-  let helpOpen = $state(false);
-  $effect(() => {
-    if (searchEl) searchEl.focus();
-  });
-  function onSearchInput(value: string) {
-    localSearch = value;
-    if (searchTimer) clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => {
-      sim.globalSearch = value;
-    }, 150);
-  }
+  import FilterBar from "./FilterBar.svelte";
+  import WorkloadDetail from "./WorkloadDetail.svelte";
 
   const selQ = $derived(sim.selectedQuota);
   const selW = $derived(sim.selectedWorkload);
@@ -27,23 +14,6 @@
       ? (sim.parsedView?.quotaSummaries.find((q) => q.name === selQ) ?? null)
       : null,
   );
-
-  // --- Helpers ---
-
-  function depName(id: string): string {
-    return sim.parsedView?.deployments.find((d) => d.id === id)?.prefix || id;
-  }
-
-  function clusterForNode(nodeName: string): string | null {
-    for (const c of sim.parsedView?.clusters ?? []) {
-      if (c.nodes.some((n) => n.name === nodeName)) return c.name;
-    }
-    return null;
-  }
-
-  function chipFreeCount(ct: string): number {
-    return sim.parsedView?.chipFree.find((c) => c.chipType === ct)?.free ?? 0;
-  }
 
   function priDisplay(pri: number): {
     label: string;
@@ -81,8 +51,6 @@
     return w.kind === "job" ? w.name : w.id;
   }
 
-  // --- Filtering ---
-
   function matchesFilters(w: Workload): boolean {
     if (selCT && w.chipType !== selCT) return false;
     if (selQ && selQ !== "__all__" && w.quota !== selQ) return false;
@@ -94,8 +62,6 @@
     }
     return true;
   }
-
-  // --- Column lists ---
 
   type RenderEntry = {
     w: Workload;
@@ -118,7 +84,6 @@
       return isRunning ? d.running > 0 : d.running === 0 && d.pending > 0;
     });
 
-    // Sort by priority desc, then name
     filtered.sort(
       (a, b) => b.priority - a.priority || wName(a).localeCompare(wName(b)),
     );
@@ -131,7 +96,6 @@
       if (placed.has(id)) continue;
       placed.add(id);
       ordered.push(w);
-      // If this is a gang job, pull in gang members
       if (w.kind === "job") {
         const j = w as { kind: "job" } & Job;
         if (j.gangMembers.length > 1) {
@@ -149,7 +113,6 @@
       }
     }
 
-    // Add bracket annotations
     const entries: RenderEntry[] = [];
     for (let i = 0; i < ordered.length; i++) {
       const w = ordered[i];
@@ -181,256 +144,11 @@
   const pendingCol = $derived.by(() =>
     buildColumn(sim.parsedView?.workloads ?? [], false),
   );
-
-  const runningCount = $derived(runningCol.length);
-  const pendingCount = $derived(pendingCol.length);
-
-  // --- Detail card data ---
-
-  const jobDetail = $derived(
-    selW ? (sim.parsedView?.jobs.find((j) => j.name === selW) ?? null) : null,
-  );
-  const deployDetail = $derived(
-    selW
-      ? (sim.parsedView?.deployments.find((d) => d.id === selW) ?? null)
-      : null,
-  );
-
-  const jobReplicasByCluster = $derived.by(
-    (): { cluster: string; nodes: { node: string; count: number }[] }[] => {
-      if (!selW || !sim.displayFrame?.pods) return [];
-      const pod = sim.displayFrame.pods[selW];
-      if (!pod) return [];
-      const clusterNodes = new Map<string, Map<string, number>>();
-      for (const r of pod.statuses_by_replica || []) {
-        const node = r.node ?? "unplaced";
-        const cl = clusterForNode(node) || "unknown";
-        if (!clusterNodes.has(cl)) clusterNodes.set(cl, new Map());
-        const nodeMap = clusterNodes.get(cl)!;
-        nodeMap.set(node, (nodeMap.get(node) || 0) + 1);
-      }
-      return Array.from(clusterNodes.entries())
-        .map(([cluster, nodeMap]) => ({
-          cluster,
-          nodes: Array.from(nodeMap.entries())
-            .map(([node, count]) => ({ node, count }))
-            .sort((a, b) => b.count - a.count),
-        }))
-        .sort((a, b) => {
-          const ac = a.nodes.reduce((s, n) => s + n.count, 0);
-          const bc = b.nodes.reduce((s, n) => s + n.count, 0);
-          return bc - ac;
-        });
-    },
-  );
-
-  const queuePos = $derived.by(() => {
-    if (!selW) return null;
-    const entries = sim.parsedView?.queueEntries ?? [];
-    const idx = entries.findIndex((e) => e.name === selW);
-    if (idx < 0) return null;
-    const ct = jobDetail?.chipType || deployDetail?.chipType;
-    const ahead = entries.slice(0, idx).filter((e) => e.chipType === ct);
-    return {
-      position: ahead.length + 1,
-      chipsAhead: ahead.reduce((s, e) => s + e.chips, 0),
-    };
-  });
-
-  function eventTimeLabel(e: {
-    seq: number | null;
-    timestamp: string | null;
-    frame: number;
-  }): string {
-    const parts: string[] = [];
-    if (e.seq != null) parts.push(`seq ${e.seq}`);
-    if (e.timestamp) {
-      try {
-        parts.push(new Date(e.timestamp).toLocaleTimeString());
-      } catch {
-        /* ignore bad timestamps */
-      }
-    }
-    return parts.length ? parts.join(" · ") : `t=${e.frame}`;
-  }
-
-  const jobEvents = $derived.by(() => {
-    if (!selW || !jobDetail) return [];
-    return sim.jobHistory(jobDetail.name);
-  });
-
-  const deployEvents = $derived.by(() => {
-    if (!selW || !deployDetail) return [];
-    const idParts = deployDetail.id.split("\0");
-    const cpr = idParts.length >= 5 ? Number(idParts[4]) || 1 : 1;
-    return sim.deploymentHistory(
-      deployDetail.prefix,
-      deployDetail.quota,
-      deployDetail.chipType,
-      deployDetail.priority,
-      cpr,
-    );
-  });
-
-  function handleSearchKeydown(e: KeyboardEvent) {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      const q = sim.globalSearch.trim().toLowerCase();
-      if (!q) return;
-      const quotas = (sim.parsedView?.quotaSummaries ?? [])
-        .filter((s) => s.name.toLowerCase().includes(q))
-        .map((s) => s.name);
-      const workloads = (sim.parsedView?.workloads ?? [])
-        .filter((w) =>
-          w.kind === "job"
-            ? w.name.toLowerCase().includes(q)
-            : w.prefix.toLowerCase().includes(q),
-        )
-        .map((w) => (w.kind === "job" ? w.name : w.id));
-      if (quotas.length > 0) {
-        sim.selectQuota(quotas[0]);
-        sim.globalSearch = "";
-        localSearch = "";
-      } else if (workloads.length > 0) {
-        sim.selectWorkload(workloads[0]);
-        sim.globalSearch = "";
-        localSearch = "";
-      }
-    }
-  }
 </script>
 
 <div class="sv">
-  <!-- ═══ FILTER BAR ═══ -->
-  <div class="sv-bar">
-    <button
-      class="sv-help-btn"
-      title="Keyboard shortcuts and help"
-      onclick={() => (helpOpen = !helpOpen)}>?</button
-    >
-    <input
-      class="sv-search"
-      type="text"
-      placeholder="Search quotas or workloads..."
-      title="Filter workloads and quota pills by name. Press Enter to select first match."
-      value={localSearch}
-      oninput={(e) => onSearchInput(e.currentTarget.value)}
-      bind:this={searchEl}
-      onkeydown={handleSearchKeydown}
-    />
-    {#each sim.parsedView?.chipFree ?? [] as c}
-      <button
-        class="sv-pill"
-        class:active={selCT === c.chipType}
-        style="color:{chipColor(c.chipType)}; border-color:{selCT === c.chipType
-          ? chipColor(c.chipType)
-          : ''}"
-        title="Filter by {c.chipType} chip type ({c.free.toLocaleString()} free)"
-        onclick={() =>
-          sim.selectChipType(selCT === c.chipType ? null : c.chipType)}
-      >
-        {c.chipType}{#if selCT === c.chipType}
-          &times;{/if}
-      </button>
-    {/each}
-    <span class="sv-sep">|</span>
-    {#if selQ}
-      <button class="sv-pill active" onclick={() => sim.selectQuota(null)}
-        >{selQ === "__all__" ? "all-quotas" : selQ} &times;</button
-      >
-    {:else}
-      {@const search = localSearch.trim().toLowerCase()}
-      <div class="sv-quota-pills">
-        <button
-          class="sv-pill sv-pill-sm"
-          onclick={() => sim.selectQuota("__all__")}>all-quotas</button
-        >
-        {#each (sim.parsedView?.quotaSummaries ?? []).filter((qs) => !search || qs.name
-              .toLowerCase()
-              .includes(search)) as qs}
-          <button
-            class="sv-pill sv-pill-sm"
-            onclick={() => sim.selectQuota(qs.name)}
-          >
-            {qs.name}
-          </button>
-        {/each}
-      </div>
-    {/if}
-  </div>
+  <FilterBar />
 
-  <!-- ═══ HELP PANEL ═══ -->
-  {#if helpOpen}
-    <div class="help-panel">
-      <div class="help-grid">
-        <div class="help-section">
-          <h4>Navigation</h4>
-          <div class="help-row">
-            <kbd>&larr;</kbd> <kbd>&rarr;</kbd> Step through frames
-          </div>
-          <div class="help-row">
-            <kbd>Space</kbd> Play / pause
-          </div>
-          <div class="help-row">
-            <kbd>Esc</kbd> Clear current selection
-          </div>
-          <div class="help-row">
-            <kbd>Shift+1…4</kbd> Select chip type
-          </div>
-          <div class="help-row">
-            Search bar filters by name; <kbd>Enter</kbd> selects first match
-          </div>
-        </div>
-        <div class="help-section">
-          <h4>Filters</h4>
-          <div class="help-row">
-            <strong>Chip pills</strong> — filter by chip type; count shows free chips
-          </div>
-          <div class="help-row">
-            <strong>Quota pills</strong> — filter workloads to one quota
-          </div>
-          <div class="help-row">
-            <strong>all-quotas</strong> — show workloads across every quota
-          </div>
-        </div>
-        <div class="help-section">
-          <h4>Status</h4>
-          <div class="help-row">
-            <span class="help-dot sv-dot-safe"></span> Running within guaranteed quota
-          </div>
-          <div class="help-row">
-            <span class="help-dot sv-dot-borrow"></span> Borrowing — at risk of preemption
-          </div>
-          <div class="help-row">
-            <span class="help-dot sv-dot-partial"></span> Partially scaled
-          </div>
-          <div class="help-row">
-            <span class="help-dot sv-dot-pending"></span> Pending — waiting for resources
-          </div>
-          <div class="help-row">
-            <span class="help-dot sv-dot-suspended"></span> Suspended by scheduler
-          </div>
-        </div>
-        <div class="help-section">
-          <h4>Rows</h4>
-          <div class="help-row">Click a row to expand its detail card</div>
-          <div class="help-row">
-            <span class="sv-type-icon" style="display:inline;font-size:14px"
-              >≡</span
-            > marks deployments (autoscaled)
-          </div>
-          <div class="help-row">
-            Priority bars: more filled = higher priority
-          </div>
-          <div class="help-row">
-            Cluster pills in detail cards show replica placement
-          </div>
-        </div>
-      </div>
-    </div>
-  {/if}
-
-  <!-- ═══ QUOTA SUMMARY ═══ -->
   {#if quotaDetail}
     <div class="sv-quota-bar">
       <div class="sv-quota-head">
@@ -487,10 +205,10 @@
   {/if}
 
   <div class="sv-columns">
-    {#each [{ label: "Running", entries: runningCol, count: runningCount }, { label: "Pending", entries: pendingCol, count: pendingCount }] as col}
+    {#each [{ label: "Running", entries: runningCol }, { label: "Pending", entries: pendingCol }] as col}
       <div class="sv-column">
         <div class="sv-col-header">
-          {col.label} <span class="sv-col-count">({col.count})</span>
+          {col.label} <span class="sv-col-count">({col.entries.length})</span>
         </div>
         <div class="sv-col-body">
           {#if col.entries.length === 0}
@@ -551,150 +269,8 @@
               </span>
             </button>
 
-            <!-- Inline detail card -->
-            {#if sel && w.kind === "job" && jobDetail}
-              <div class="sv-card">
-                <div class="sv-card-head">
-                  {jobDetail.name}
-                  <button class="sv-x" onclick={() => sim.selectWorkload(null)}
-                    >&times;</button
-                  >
-                </div>
-                <div class="sv-card-row">
-                  <span class="sv-tag {priDisplay(jobDetail.priority).cls}"
-                    >{priDisplay(jobDetail.priority).label}</span
-                  >
-                  <span class="sv-tag"
-                    >{jobDetail.replicas}&times;{jobDetail.chipsPerReplica}<span
-                      style="color:{chipColor(jobDetail.chipType)}"
-                      >&times;{jobDetail.chipType}</span
-                    ></span
-                  >
-                  <span class="sv-tag">{jobDetail.quota}</span>
-                  <span class="sv-tag">{jobDetail.status}</span>
-                </div>
-                {#if jobDetail.borrowing}
-                  <div class="sv-card-warn">
-                    Running on borrowed quota — at risk of preemption
-                  </div>
-                {/if}
-                {#if queuePos}
-                  <div class="sv-card-note">
-                    Pos {queuePos.position} &middot; {queuePos.chipsAhead.toLocaleString()}
-                    {jobDetail.chipType} ahead &middot;
-                    {chipFreeCount(jobDetail.chipType).toLocaleString()} free (need
-                    {jobDetail.totalGpus})
-                  </div>
-                {/if}
-                {#if jobDetail.gangMembers.length > 1}
-                  <div class="sv-card-row">
-                    <span class="sv-dim">Gang:</span>
-                    {#each jobDetail.gangMembers as m}
-                      <button
-                        class="sv-gang"
-                        class:self={m === jobDetail.name}
-                        onclick={() => sim.selectWorkload(m)}>{m}</button
-                      >
-                    {/each}
-                  </div>
-                {/if}
-                {#if jobReplicasByCluster.length}
-                  <div class="sv-placement">
-                    <span class="sv-dim">Placement for this job:</span>
-                    {#each jobReplicasByCluster as group}
-                      {@const total = group.nodes.reduce(
-                        (s, n) => s + n.count,
-                        0,
-                      )}
-                      <button
-                        class="sv-cluster-link"
-                        title="{total} replica{total === 1
-                          ? ''
-                          : 's'} on {group.cluster}"
-                        onclick={() => sim.selectCluster(group.cluster)}
-                      >
-                        {group.cluster} &mdash; {total} replica{total === 1
-                          ? ""
-                          : "s"}
-                      </button>
-                    {/each}
-                  </div>
-                {/if}
-                {#if jobEvents.length}
-                  <div class="sv-events">
-                    <h5>History</h5>
-                    {#each jobEvents as ev}
-                      <button
-                        class="sv-event"
-                        onclick={() => sim.requestFrame(ev.frame)}
-                      >
-                        <span class="sv-event-time">{eventTimeLabel(ev)}</span>
-                        {ev.status}
-                      </button>
-                    {/each}
-                  </div>
-                {/if}
-              </div>
-            {:else if sel && w.kind === "deployment" && deployDetail}
-              <div class="sv-card">
-                <div class="sv-card-head">
-                  {deployDetail.prefix}
-                  <button class="sv-x" onclick={() => sim.selectWorkload(null)}
-                    >&times;</button
-                  >
-                </div>
-                <div class="sv-card-row">
-                  <span class="sv-tag {priDisplay(deployDetail.priority).cls}"
-                    >{priDisplay(deployDetail.priority).label}</span
-                  >
-                  <span class="sv-tag"
-                    >{deployDetail.running}/{deployDetail.total} pods</span
-                  >
-                  <span
-                    class="sv-tag"
-                    style="color:{chipColor(deployDetail.chipType)}"
-                    >{deployDetail.chipType}</span
-                  >
-                  <span class="sv-tag">{deployDetail.quota}</span>
-                </div>
-                {#if deployDetail.borrowing}
-                  <div class="sv-card-warn">
-                    Running on borrowed quota — at risk of preemption
-                  </div>
-                {/if}
-                <div class="sv-card-note">
-                  {deployDetail.running.toLocaleString()} running / {deployDetail.total.toLocaleString()}
-                  total
-                  {#if deployDetail.pending > 0}&middot; {deployDetail.pending.toLocaleString()}
-                    pending{/if}
-                </div>
-                {#if Object.keys(deployDetail.clusterCounts).length}
-                  <div class="sv-placement">
-                    {#each Object.entries(deployDetail.clusterCounts).sort((a, b) => b[1] - a[1]) as [cl, ct]}
-                      <button
-                        class="sv-node sv-node-link"
-                        title="{ct} pod{ct === 1 ? '' : 's'} on {cl}"
-                        onclick={() => sim.selectCluster(cl)}
-                        >{cl} &mdash; {ct} pod{ct === 1 ? "" : "s"}</button
-                      >
-                    {/each}
-                  </div>
-                {/if}
-                {#if deployEvents.length}
-                  <div class="sv-events">
-                    <h5>History</h5>
-                    {#each deployEvents as ev}
-                      <button
-                        class="sv-event"
-                        onclick={() => sim.requestFrame(ev.frame)}
-                      >
-                        <span class="sv-event-time">{eventTimeLabel(ev)}</span>
-                        {ev.running}/{ev.total} running
-                      </button>
-                    {/each}
-                  </div>
-                {/if}
-              </div>
+            {#if sel}
+              <WorkloadDetail workload={w} />
             {/if}
           {/each}
         </div>

@@ -440,107 +440,6 @@ select {
   vertical-align: middle;
 }
 
-.layout {
-  display: grid;
-  grid-template-columns: 320px 1fr;
-  min-height: calc(100vh - 116px);
-}
-
-.layout.three-pane {
-  grid-template-columns: 280px 340px 1fr;
-  min-height: calc(100vh - 52px);
-}
-
-aside {
-  border-right: 1px solid rgba(155, 180, 196, 0.1);
-  padding: 20px;
-  overflow-y: auto;
-  background: rgba(6, 15, 22, 0.45);
-}
-
-.sidebar-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 14px;
-}
-
-.sidebar-head h2 {
-  font-size: 13px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-dim);
-}
-
-.queue-caption {
-  width: 100%;
-  font-size: 11px;
-  color: var(--text-dim);
-  margin-top: 4px;
-  opacity: 0.7;
-}
-
-.sidebar-tabs {
-  display: flex;
-  gap: 0;
-  margin-bottom: 16px;
-  border: 1px solid rgba(155, 180, 196, 0.14);
-  border-radius: 10px;
-  overflow: hidden;
-  background: rgba(7, 16, 24, 0.6);
-}
-
-.sidebar-tab {
-  flex: 1;
-  padding: 8px 0;
-  font-size: 12px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-dim);
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  transition:
-    background 0.15s,
-    color 0.15s;
-}
-
-.sidebar-tab:not(:last-child) {
-  border-right: 1px solid rgba(155, 180, 196, 0.14);
-}
-
-.sidebar-tab.active {
-  background: rgba(22, 50, 67, 0.72);
-  color: var(--text);
-}
-
-.sidebar-tab:hover:not(.active) {
-  background: rgba(22, 50, 67, 0.35);
-}
-
-.sidebar-tab .tab-badge {
-  display: inline-block;
-  min-width: 18px;
-  padding: 1px 5px;
-  border-radius: 999px;
-  font-size: 10px;
-  font-weight: 700;
-  background: rgba(22, 50, 67, 0.92);
-  border: 1px solid rgba(155, 180, 196, 0.16);
-  margin-left: 4px;
-  vertical-align: middle;
-}
-
-.tab-pane {
-  display: none;
-}
-
-.tab-pane.active {
-  display: block;
-}
-
 .gen-section {
   margin-bottom: 16px;
 }
@@ -671,6 +570,101 @@ aside {
   font-size: 12px;
   flex: 1;
   min-width: 0;
+}
+
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 40;
+  animation: drawer-fade-in 0.15s ease-out;
+}
+
+.drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 400px;
+  max-width: 92vw;
+  background: rgba(10, 22, 32, 0.98);
+  border-left: 1px solid rgba(155, 180, 196, 0.14);
+  box-shadow: -8px 0 32px rgba(0, 0, 0, 0.35);
+  z-index: 41;
+  display: flex;
+  flex-direction: column;
+  animation: drawer-slide-in 0.18s ease-out;
+}
+
+.drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid rgba(155, 180, 196, 0.12);
+}
+
+.drawer-head h2 {
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin: 0;
+}
+
+.drawer-close {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+
+.drawer-close:hover {
+  color: var(--text);
+  background: rgba(22, 50, 67, 0.5);
+}
+
+.drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 18px 24px;
+}
+
+.hdr-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.btn.active {
+  background: rgba(22, 50, 67, 0.92);
+  border-color: rgba(155, 180, 196, 0.32);
+  color: var(--text);
+}
+
+@keyframes drawer-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes drawer-slide-in {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
 }
 
 .gen-unavailable {
@@ -861,6 +855,18 @@ main {
   cursor: default;
 }
 
+.chip.sv-dim {
+  opacity: 0.16;
+  filter: grayscale(1);
+}
+
+.chip.sv-sel {
+  transform: scale(1.2);
+  box-shadow:
+    0 0 0 2px var(--bg),
+    0 0 0 4px var(--text);
+}
+
 .phase-pending {
   background: var(--p-pending);
 }
@@ -1016,16 +1022,6 @@ main {
 }
 
 @media (max-width: 960px) {
-  .layout {
-    grid-template-columns: 1fr;
-  }
-
-  aside {
-    border-right: 0;
-    border-bottom: 1px solid rgba(155, 180, 196, 0.1);
-    max-height: 40vh;
-  }
-
   .header-top,
   .header-bottom,
   .header-insights {
@@ -1069,10 +1065,6 @@ main {
   }
 
   main {
-    padding: 14px;
-  }
-
-  aside {
     padding: 14px;
   }
 

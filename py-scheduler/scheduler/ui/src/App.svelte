@@ -5,25 +5,14 @@
   import Header from "./components/Header.svelte";
   import ClusterGrid from "./components/ClusterGrid.svelte";
   import ScaleView from "./components/ScaleView.svelte";
+  import GeneratorDrawer from "./components/GeneratorDrawer.svelte";
 
   let tooltipVisible = $state(false);
   let tooltipX = $state(0);
   let tooltipY = $state(0);
   let tooltipHtml = $state("");
   let tooltipEl: HTMLDivElement;
-  let dynamicStyle: HTMLStyleElement | null = null;
 
-  $effect(() => {
-    if (!dynamicStyle) {
-      dynamicStyle = document.createElement("style");
-      dynamicStyle.id = "dynamic-styles";
-      document.head.appendChild(dynamicStyle);
-    }
-    dynamicStyle.textContent = sim.highlightCss;
-  });
-  $effect(() => {
-    document.body.classList.toggle("has-selection", sim.hasSelection);
-  });
   $effect(() => {
     const handler = () => sim.handleSliderPointerUp();
     document.addEventListener("pointerup", handler);
@@ -31,17 +20,11 @@
   });
   $effect(() => {
     sim.initFromUrl().catch((e: any) => sim.showError(e.message));
-    return () => {
-      if (dynamicStyle) {
-        dynamicStyle.remove();
-        dynamicStyle = null;
-      }
-    };
   });
 
   function handleMouseMove(e: MouseEvent) {
     const target = (e.target as HTMLElement).closest(
-      ".chip[data-pod], .queue-item[data-pod]",
+      ".chip[data-pod]",
     ) as HTMLElement | null;
     if (!target || !sim.frames.length) {
       tooltipVisible = false;
@@ -78,7 +61,7 @@
 
   function handleClick(e: MouseEvent) {
     const target = (e.target as HTMLElement).closest(
-      ".chip[data-pod], .queue-item[data-pod]",
+      ".chip[data-pod]",
     ) as HTMLElement | null;
     if (target) {
       const podName = target.getAttribute("data-pod")!;
@@ -159,6 +142,7 @@
   {:else}
     <ScaleView />
   {/if}
+  <GeneratorDrawer />
 </div>
 
 <div

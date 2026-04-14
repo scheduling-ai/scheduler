@@ -1,8 +1,10 @@
 <script lang="ts">
   import { sim } from "../lib/state.svelte";
 
+  const gen = $derived(sim.gen);
+
   function markDirty() {
-    sim.genFormDirty = true;
+    gen.formDirty = true;
   }
 </script>
 
@@ -23,25 +25,23 @@
   </div>
 </div>
 
-{#if sim.genConnected}
+{#if gen.connected}
   <div class="gen-status-row">
-    <span class="gen-pill" class:running={sim.genRunning}>
-      {sim.genRunning ? "Running" : "Paused"}
+    <span class="gen-pill" class:running={gen.running}>
+      {gen.running ? "Running" : "Paused"}
     </span>
-    <span class="gen-pill" class:running={!sim.genFormDirty}>
-      {sim.genFormDirty ? "Unsaved" : "Saved"}
+    <span class="gen-pill" class:running={!gen.formDirty}>
+      {gen.formDirty ? "Unsaved" : "Saved"}
     </span>
   </div>
 
   <div class="gen-section">
     <h3>Control</h3>
     <div class="gen-btns">
-      <button class="gen-btn primary" onclick={() => sim.genStart()}
-        >Start</button
-      >
-      <button class="gen-btn" onclick={() => sim.genPause()}>Pause</button>
-      <button class="gen-btn" onclick={() => sim.genResume()}>Resume</button>
-      <button class="gen-btn" onclick={() => sim.genSaveConfig()}
+      <button class="gen-btn primary" onclick={() => gen.start()}>Start</button>
+      <button class="gen-btn" onclick={() => gen.pause()}>Pause</button>
+      <button class="gen-btn" onclick={() => gen.resume()}>Resume</button>
+      <button class="gen-btn" onclick={() => gen.saveConfig()}
         >Save config</button
       >
     </div>
@@ -52,18 +52,14 @@
     <div class="gen-grid">
       <div class="gen-field">
         <label title="RNG seed for reproducible job generation">Seed</label
-        ><input
-          type="number"
-          bind:value={sim.genForm.seed}
-          oninput={markDirty}
-        />
+        ><input type="number" bind:value={gen.form.seed} oninput={markDirty} />
       </div>
       <div class="gen-field">
         <label title="Average jobs submitted per second">Arrival rate</label
         ><input
           type="number"
           step="0.01"
-          bind:value={sim.genForm.arrival_rate}
+          bind:value={gen.form.arrival_rate}
           oninput={markDirty}
         />
       </div>
@@ -73,7 +69,7 @@
         ><input
           type="number"
           step="0.1"
-          bind:value={sim.genForm.burst_factor}
+          bind:value={gen.form.burst_factor}
           oninput={markDirty}
         />
       </div>
@@ -81,7 +77,7 @@
         <label title="Seconds between solver ticks">Loop interval</label><input
           type="number"
           step="0.1"
-          bind:value={sim.genForm.loop_interval_seconds}
+          bind:value={gen.form.loop_interval_seconds}
           oninput={markDirty}
         />
       </div>
@@ -90,7 +86,7 @@
           >Priority min</label
         ><input
           type="number"
-          bind:value={sim.genForm.priority_min}
+          bind:value={gen.form.priority_min}
           oninput={markDirty}
         />
       </div>
@@ -99,7 +95,7 @@
           >Priority max</label
         ><input
           type="number"
-          bind:value={sim.genForm.priority_max}
+          bind:value={gen.form.priority_max}
           oninput={markDirty}
         />
       </div>
@@ -107,7 +103,7 @@
         <label title="Minimum replicas per generated job">Replica min</label
         ><input
           type="number"
-          bind:value={sim.genForm.replica_min}
+          bind:value={gen.form.replica_min}
           oninput={markDirty}
         />
       </div>
@@ -115,7 +111,7 @@
         <label title="Maximum replicas per generated job">Replica max</label
         ><input
           type="number"
-          bind:value={sim.genForm.replica_max}
+          bind:value={gen.form.replica_max}
           oninput={markDirty}
         />
       </div>
@@ -123,7 +119,7 @@
         <label title="Shortest job runtime in seconds">Runtime min</label><input
           type="number"
           step="1"
-          bind:value={sim.genForm.runtime_min}
+          bind:value={gen.form.runtime_min}
           oninput={markDirty}
         />
       </div>
@@ -131,7 +127,7 @@
         <label title="Longest job runtime in seconds">Runtime max</label><input
           type="number"
           step="1"
-          bind:value={sim.genForm.runtime_max}
+          bind:value={gen.form.runtime_max}
           oninput={markDirty}
         />
       </div>
@@ -141,7 +137,7 @@
         ><input
           type="number"
           step="0.01"
-          bind:value={sim.genForm.gang_frequency}
+          bind:value={gen.form.gang_frequency}
           oninput={markDirty}
         />
       </div>
@@ -150,7 +146,7 @@
         ><input
           type="number"
           step="0.01"
-          bind:value={sim.genForm.replica_failure_rate}
+          bind:value={gen.form.replica_failure_rate}
           oninput={markDirty}
         />
       </div>
@@ -159,7 +155,7 @@
         ><input
           type="number"
           step="0.01"
-          bind:value={sim.genForm.node_failure_rate}
+          bind:value={gen.form.node_failure_rate}
           oninput={markDirty}
         />
       </div>
@@ -169,27 +165,27 @@
         ><input
           type="number"
           step="0.01"
-          bind:value={sim.genForm.node_recovery_rate}
+          bind:value={gen.form.node_recovery_rate}
           oninput={markDirty}
         />
       </div>
       <div class="gen-field full">
         <label title="JSON object mapping quota names to relative weights"
           >Quota weights</label
-        ><textarea bind:value={sim.genForm.quota_weights} oninput={markDirty}
+        ><textarea bind:value={gen.form.quota_weights} oninput={markDirty}
         ></textarea>
       </div>
       <div class="gen-field full">
         <label title="JSON object mapping chip types to relative weights"
           >Chip weights</label
-        ><textarea bind:value={sim.genForm.chip_weights} oninput={markDirty}
+        ><textarea bind:value={gen.form.chip_weights} oninput={markDirty}
         ></textarea>
       </div>
       <div class="gen-field full">
         <label
           title="JSON object mapping chips-per-replica counts to relative weights"
           >Chips/replica weights</label
-        ><textarea bind:value={sim.genForm.chips_weights} oninput={markDirty}
+        ><textarea bind:value={gen.form.chips_weights} oninput={markDirty}
         ></textarea>
       </div>
     </div>

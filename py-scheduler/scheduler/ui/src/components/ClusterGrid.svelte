@@ -9,10 +9,20 @@
       ? (sim.parsedView?.clusters ?? []).filter((c) => c.name === filterCluster)
       : (sim.parsedView?.clusters ?? []),
   );
+
+  const clusterCaption = $derived.by(() => {
+    const frame = sim.displayFrame;
+    if (!frame) return "";
+    const seq =
+      sim.currentMode === "live"
+        ? `seq ${frame.seq || 0}`
+        : `t=${sim.currentFrameIdx}`;
+    return `Cluster state at ${seq} \u2014 solver called with this state as input`;
+  });
 </script>
 
-{#if sim.clusterCaption}
-  <div class="frame-note">{sim.clusterCaption}</div>
+{#if clusterCaption}
+  <div class="frame-note">{clusterCaption}</div>
 {/if}
 
 {#if !sim.parsedView}
@@ -48,9 +58,12 @@
                     <span class="gang-num">#{segment.gangIdx}</span>
                   {/if}
                   {#each segment.allocs as alloc}
+                    {@const sel = sim.selectedPods.has(alloc.pod)}
                     {#each { length: alloc.chips } as _}
                       <div
                         class="chip phase-{alloc.phase}"
+                        class:sv-sel={sel}
+                        class:sv-dim={sim.hasSelection && !sel}
                         data-pod={alloc.pod}
                         data-phase={alloc.phase}
                       ></div>
