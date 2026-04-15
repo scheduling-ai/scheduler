@@ -6,14 +6,24 @@ real k8s APIs without real GPUs.
 ## What it creates
 
 - 1 zonal GKE Standard cluster in `europe-west4-a` (free tier: $0 control plane)
-- 32 spot `e2-micro` nodes with 15GB pd-standard disks
+- 4 spot node pools, 8 `e2-micro` nodes each (32 nodes total), one pool per chip type
 - Cloud NAT for outbound traffic (private nodes have no external IPs)
-- DaemonSet that patches every node with fake extended resources:
-  - `example.com/H200`: 8 per node (matches a3-ultragpu-8g)
-  - `example.com/H100`: 8 per node (matches a3-highgpu-8g)
-  - `example.com/A100`: 16 per node (matches a2-megagpu-16g)
-  - `example.com/L40S`: 4 per node (matches g4-standard-48)
 - Scheduler SA with RBAC (read nodes/pods/jobs, manage workloads, impersonate users)
+
+Each pool sets two node labels at registration:
+- `accelerator`: `H200` | `H100` | `A100` | `L40S`
+- `scheduler.example.com/chips`: per-node chip count for that type
+
+| Pool  | Nodes | Chip type | Chips/node | Pool chips |
+|-------|-------|-----------|------------|------------|
+| h200  | 8     | H200      | 8          | 64         |
+| h100  | 8     | H100      | 8          | 64         |
+| a100  | 8     | A100      | 16         | 128        |
+| l40s  | 8     | L40S      | 4          | 32         |
+| Total | 32    |           |            | 288        |
+
+Each node simulates a single chip type, matching real GCP GPU node topology
+(a3-ultragpu-8g, a3-highgpu-8g, a2-megagpu-16g, g4-standard-48).
 
 ## Cost
 
@@ -41,14 +51,19 @@ leave ~60MB free. GKE agents don't fit. Trade-off: `kubectl logs` and
 `kubectl exec` don't work via the API server. Use `kubectl debug` or
 port-forward instead.
 
-**All chip types on every node**: Unrealistic (real nodes have one GPU type)
-but lets us test multi-accelerator scheduling without separate node pools.
-The scheduler still sees correct per-node chip counts.
+**Labels, not extended resources**: k8s has no declarative way to advertise
+extended resources without a device plugin, and a DaemonSet patching
+`/status/capacity` every 10s races kubelet's own status writes and leaves
+a cold-start window after spot preemption. Since our scheduler binds pods
+directly (bypassing kube-scheduler), we don't need k8s-side enforcement —
+the scheduler reads chip type/count from node labels set declaratively in
+the pool config. Run the scheduler with `--chip-count-label
+scheduler.example.com/chips`.
 
-**Patch loop every 10s**: k8s has no declarative way to add extended resources
-without a device plugin. The DaemonSet patches `/status/capacity` via the
-API. A proper device plugin would be cleaner but is much more code for the
-same result.
+**One chip type per pool**: A homogeneous node matches real GPU hardware
+(no node runs mixed chip types) and fits the scheduler's data model
+(single `chip_type` + single `chips` per node). Earlier multi-type setup
+needed a patcher DaemonSet and never mapped cleanly to the solver schema.
 
 ## Usage
 
@@ -61,6 +76,6 @@ cd infra && ./setup.sh
 # Tear down (stops billing)
 cd infra && terraform destroy
 
-# Scale nodes
-cd infra && terraform apply -var="node_count=16"
+# Scale (applies to every pool)
+cd infra && terraform apply -var="nodes_per_pool=4"
 ```

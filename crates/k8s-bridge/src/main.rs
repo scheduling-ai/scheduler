@@ -44,6 +44,10 @@ enum Command {
         /// Resource name for chip/GPU capacity.
         #[arg(long, default_value = "nvidia.com/gpu")]
         chip_resource: String,
+        /// If set, read per-node chip count from this node label instead of
+        /// the extended resource. Used by test clusters without a device plugin.
+        #[arg(long)]
+        chip_count_label: Option<String>,
         /// Path to a JSON file defining quota guarantees. Each quota is
         /// an object with `name` and `guarantees` (cluster -> chip_type -> count).
         #[arg(long)]
@@ -73,6 +77,10 @@ enum Command {
         /// Resource name for chip/GPU capacity.
         #[arg(long, default_value = "nvidia.com/gpu")]
         chip_resource: String,
+        /// If set, read per-node chip count from this node label instead of
+        /// the extended resource. Used by test clusters without a device plugin.
+        #[arg(long)]
+        chip_count_label: Option<String>,
         /// Port for the HTTP API server.
         #[arg(long, default_value = "8080")]
         port: u16,
@@ -152,6 +160,7 @@ async fn main() -> anyhow::Result<()> {
             clusters,
             chip_label,
             chip_resource,
+            chip_count_label,
             quotas,
             record,
             solver,
@@ -161,6 +170,7 @@ async fn main() -> anyhow::Result<()> {
             let config = binder::BinderConfig {
                 chip_label,
                 chip_resource,
+                chip_count_label,
                 quotas: loaded_quotas,
                 solver_name: solver,
                 ..binder::BinderConfig::default()
@@ -172,6 +182,7 @@ async fn main() -> anyhow::Result<()> {
             clusters,
             chip_label,
             chip_resource,
+            chip_count_label,
             port,
             quotas,
             record,
@@ -182,6 +193,7 @@ async fn main() -> anyhow::Result<()> {
             let config = binder::BinderConfig {
                 chip_label,
                 chip_resource,
+                chip_count_label,
                 quotas: loaded_quotas,
                 solver_name: solver,
                 ..binder::BinderConfig::default()

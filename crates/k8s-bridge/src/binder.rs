@@ -69,6 +69,11 @@ pub struct BinderConfig {
     pub taint_value: String,
     pub chip_label: String,
     pub chip_resource: String,
+    /// If set, read per-node chip count from this node label instead of
+    /// the extended resource in `status.allocatable`/`status.capacity`.
+    /// Used by test clusters that advertise chips via labels rather than
+    /// a device plugin.
+    pub chip_count_label: Option<String>,
     pub job_name_label: String,
     pub priority_annotation: String,
     pub quota_annotation: String,
@@ -89,6 +94,7 @@ impl Default for BinderConfig {
             taint_value: "custom".into(),
             chip_label: "accelerator".into(),
             chip_resource: "nvidia.com/gpu".into(),
+            chip_count_label: None,
             job_name_label: "scheduler.example.com/job-name".into(),
             priority_annotation: "scheduler.example.com/priority".into(),
             quota_annotation: "scheduler.example.com/quota".into(),
@@ -800,7 +806,7 @@ fn build_cluster_state(
                 .get(&config.chip_label)
                 .cloned()
                 .unwrap_or_default(),
-            chips: node_chip_capacity(node, &config.chip_resource),
+            chips: node_chip_capacity(node, config),
         })
         .collect();
 
@@ -1988,16 +1994,29 @@ async fn update_scheduler_state(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Read chip count from node status.  Prefer `allocatable` (which subtracts
-/// kubelet-reserved resources) over raw `capacity`.
-fn node_chip_capacity(node: &Node, chip_resource: &str) -> u32 {
+/// Read per-node chip count. If `chip_count_label` is set, the count comes
+/// from that node label (used by test clusters without a device plugin);
+/// otherwise it comes from `status.allocatable`/`status.capacity` for the
+/// configured extended resource.
+fn node_chip_capacity(node: &Node, config: &BinderConfig) -> u32 {
+    if let Some(label) = config.chip_count_label.as_deref() {
+        return node
+            .labels()
+            .get(label)
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(0);
+    }
     node.status
         .as_ref()
         .and_then(|s| {
             s.allocatable
                 .as_ref()
-                .and_then(|a| a.get(chip_resource))
-                .or_else(|| s.capacity.as_ref().and_then(|c| c.get(chip_resource)))
+                .and_then(|a| a.get(&config.chip_resource))
+                .or_else(|| {
+                    s.capacity
+                        .as_ref()
+                        .and_then(|c| c.get(&config.chip_resource))
+                })
         })
         .and_then(|q| q.0.parse::<u32>().ok())
         .unwrap_or(0)

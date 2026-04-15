@@ -12,8 +12,7 @@ variable "cluster_name" {
   default = "scheduler"
 }
 
-variable "node_count" {
+variable "nodes_per_pool" {
   type    = number
-  default = 32
+  default = 8
 }
-

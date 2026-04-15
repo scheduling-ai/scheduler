@@ -77,18 +77,36 @@ resource "google_container_cluster" "this" {
   ]
 }
 
-resource "google_container_node_pool" "default" {
-  name     = "default"
+# One homogeneous pool per chip type. Labels set at node registration —
+# no patcher DaemonSet, no race with kubelet, spot replacements inherit labels.
+locals {
+  chip_pools = {
+    h200 = { chip_type = "H200", chips_per_node = 8 }
+    h100 = { chip_type = "H100", chips_per_node = 8 }
+    a100 = { chip_type = "A100", chips_per_node = 16 }
+    l40s = { chip_type = "L40S", chips_per_node = 4 }
+  }
+}
+
+resource "google_container_node_pool" "chip" {
+  for_each = local.chip_pools
+
+  name     = each.key
   cluster  = google_container_cluster.this.name
   location = var.zone
 
-  node_count = var.node_count
+  node_count = var.nodes_per_pool
 
   node_config {
     machine_type = "e2-micro"
     spot         = true
     disk_size_gb = 15
     disk_type    = "pd-standard"
+
+    labels = {
+      "accelerator"                 = each.value.chip_type
+      "scheduler.example.com/chips" = tostring(each.value.chips_per_node)
+    }
 
     taint {
       key    = "scheduler.example.com/managed"
