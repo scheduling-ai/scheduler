@@ -26,7 +26,7 @@
 ```
 
 - **Rust k8s-bridge**: Watches clusters (nodes, pods, jobs), calls solver, applies placement decisions. Handles workload lifecycle, optimistic concurrency, backoff, reflector auto-recovery.
-- **Python solver**: Stateless scheduling function. Heuristic implementation (Kueue-style admission + bin packing). Selectable via `--solver`.
+- **Python solver**: Stateless scheduling function. Two implementations: a heuristic mock (Kueue-style admission + bin packing) and a MILP formulation (Pyomo + HiGHS) with lexicographic scoring. Selectable via `--solver`.
 - **Interface**: JSON over stdin/stdout. Solver is crash-isolated and independently testable.
 
 Follows [Kueue](https://kueue.sigs.k8s.io/)'s lifecycle patterns (suspend toggle, quota semantics, Pod preemption via delete) without taking it as a dependency. Key deviation: workloads are held centrally until placed, enabling multi-cluster optimization and API-server backpressure.

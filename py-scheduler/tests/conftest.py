@@ -1,8 +1,11 @@
 import pytest
 
-from scheduler.solver import solve as heuristic_solve
+from scheduler.milp_solver import solve as milp_solve
+from scheduler.solver import solve as mock_solve
 
 
-@pytest.fixture(params=["heuristic"], ids=["heuristic"])
+@pytest.fixture(params=["mock", "milp"], ids=["mock", "milp"])
 def solver_fn(request):
-    return heuristic_solve
+    if request.param == "mock":
+        return mock_solve
+    return milp_solve

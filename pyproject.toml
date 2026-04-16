@@ -49,4 +49,5 @@ line-length = 100
 extra-paths = ["py-scheduler"]
 
 [tool.ty.src]
-exclude = []
+# Pyomo lacks type stubs; exclude MILP solver from type checking.
+exclude = ["py-scheduler/scheduler/milp_solver.py", "py-scheduler/tests/test_milp_solver_options.py"]
