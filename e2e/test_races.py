@@ -139,6 +139,8 @@ def test_scheduler_restart_with_existing_cluster_objects(rust_binary, kind_clust
                 CHIP_RESOURCE,
                 "--record",
                 str(record_path),
+                "--solver",
+                "milp",
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

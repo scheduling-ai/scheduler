@@ -488,6 +488,8 @@ def scheduler(rust_binary, kind_clusters):
             CHIP_RESOURCE,
             "--record",
             str(record_path),
+            "--solver",
+            "milp",
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
