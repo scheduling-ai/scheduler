@@ -12,8 +12,8 @@ target/
 # Deploy
 .env
 
-# Docs (added separately)
-docs/
+# Private docs clone (separate repo: github.com/scheduling-ai/docs)
+docs/private/
 
 # Simulator live state
 .scheduler-live-state

@@ -1,8 +1,19 @@
 # Multi-Cluster GPU Scheduler
 
+An optimisation-based scheduler placing GPU workloads across multiple Kubernetes clusters in real time — gang scheduling, quota guarantees with borrowing, priority preemption, and autoscaled deployments.
+
+The primary focus is **improved observability and robustness of scheduling decisions**, pursued through two design choices: a **UX-first** approach that makes every decision inspectable, and **end-to-end control** of placement formulated as a **single optimisation problem** rather than a pipeline of independent heuristics.
+
+Read more: [problem framing and requirements](docs/problem_description.md) · [MILP formulation (PDF)](docs/milp_formulation.pdf) · [20 questions with traced answers](docs/questions-and-answers.md) · full catalogue in [`docs/CATALOGUE.md`](docs/CATALOGUE.md).
 
 > [!TIP]
 > **Try the interactive UI now:** `docker compose up -d --build` then open http://localhost:8000
+
+<p align="center">
+  <img src="docs/ui-screenshot.png" alt="Browser UI: running and pending workloads, per-chip-type free capacity, frame scrubber" width="900">
+  <br>
+  <em>Browser UI — step through solver decisions frame by frame, filter by quota / chip type / workload.</em>
+</p>
 
 ## Architecture
 
@@ -39,7 +50,7 @@ crates/k8s-bridge/      Rust k8s bridge (reflectors, binder, API, solver bridge)
 e2e/                    End-to-end tests against real kind clusters
 scripts/                Dev tooling (kind cluster setup)
 deploy/                 K8s manifests and kind config
-docs/                   Design docs (see docs/README.md for catalogue)
+docs/                   Design docs (see docs/CATALOGUE.md)
 ```
 
 ## Quick start

@@ -8,7 +8,7 @@ Multi-cluster GPU job scheduler.
 - `crates/k8s-bridge/` — Rust crate (k8s reflectors, workload binder, observer, HTTP API)
 - `scripts/` — Dev tooling (kind cluster setup)
 - `deploy/` — K8s manifests and kind config
-- `docs/` — Design docs (if present, check them out; read `docs/README.md` for a catalogue)
+- `docs/` — Design docs (see `docs/CATALOGUE.md`). If `docs/private/` exists, check `docs/private/CATALOGUE.md` too.
 - `py-scheduler/scheduler/ui/` — Svelte 5 + Vite browser UI (replay, live viewer, generator controls)
 
 ## Simulator and UI
