@@ -3,6 +3,7 @@ mod binder;
 mod job_store;
 
 mod observer;
+mod snapshot;
 mod solver;
 mod solver_types;
 
@@ -48,6 +49,18 @@ enum Command {
         /// the extended resource. Used by test clusters without a device plugin.
         #[arg(long)]
         chip_count_label: Option<String>,
+        /// If set, read per-replica chip count from this annotation on the
+        /// Job/Pod when the container's `resources.requests[chip_resource]`
+        /// is missing or zero. For demo clusters where requesting
+        /// `nvidia.com/gpu` would cause kubelet to reject the pod.
+        #[arg(long)]
+        chips_annotation: Option<String>,
+        /// Taint key identifying nodes managed by this scheduler.
+        #[arg(long, default_value = "scheduler")]
+        taint_key: String,
+        /// Taint value paired with `--taint-key`.
+        #[arg(long, default_value = "custom")]
+        taint_value: String,
         /// Path to a JSON file defining quota guarantees. Each quota is
         /// an object with `name` and `guarantees` (cluster -> chip_type -> count).
         #[arg(long)]
@@ -81,6 +94,16 @@ enum Command {
         /// the extended resource. Used by test clusters without a device plugin.
         #[arg(long)]
         chip_count_label: Option<String>,
+        /// If set, read per-replica chip count from this annotation as a
+        /// fallback. See the `bind` subcommand for details.
+        #[arg(long)]
+        chips_annotation: Option<String>,
+        /// Taint key identifying nodes managed by this scheduler.
+        #[arg(long, default_value = "scheduler")]
+        taint_key: String,
+        /// Taint value paired with `--taint-key`.
+        #[arg(long, default_value = "custom")]
+        taint_value: String,
         /// Port for the HTTP API server.
         #[arg(long, default_value = "8080")]
         port: u16,
@@ -161,6 +184,9 @@ async fn main() -> anyhow::Result<()> {
             chip_label,
             chip_resource,
             chip_count_label,
+            chips_annotation,
+            taint_key,
+            taint_value,
             quotas,
             record,
             solver,
@@ -171,11 +197,14 @@ async fn main() -> anyhow::Result<()> {
                 chip_label,
                 chip_resource,
                 chip_count_label,
+                chips_annotation,
+                taint_key,
+                taint_value,
                 quotas: loaded_quotas,
                 solver_name: solver,
                 ..binder::BinderConfig::default()
             };
-            binder::run(dry_run, &cluster_specs, &config, None, None, record).await
+            binder::run(dry_run, &cluster_specs, &config, None, None, None, record).await
         }
         Command::Serve {
             dry_run,
@@ -183,6 +212,9 @@ async fn main() -> anyhow::Result<()> {
             chip_label,
             chip_resource,
             chip_count_label,
+            chips_annotation,
+            taint_key,
+            taint_value,
             port,
             quotas,
             record,
@@ -194,6 +226,9 @@ async fn main() -> anyhow::Result<()> {
                 chip_label,
                 chip_resource,
                 chip_count_label,
+                chips_annotation,
+                taint_key,
+                taint_value,
                 quotas: loaded_quotas,
                 solver_name: solver,
                 ..binder::BinderConfig::default()
@@ -201,8 +236,13 @@ async fn main() -> anyhow::Result<()> {
 
             let store = job_store::new_store();
             let scheduler_state = job_store::new_scheduler_state();
+            let snapshot_state = snapshot::new_snapshot_state();
 
-            let app = api::router(store.clone(), scheduler_state.clone());
+            let app = api::router(
+                store.clone(),
+                scheduler_state.clone(),
+                snapshot_state.clone(),
+            );
             let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
             tracing::info!(port, "HTTP API listening");
 
@@ -210,7 +250,15 @@ async fn main() -> anyhow::Result<()> {
                 res = axum::serve(listener, app) => {
                     res.map_err(|e| anyhow::anyhow!("HTTP server error: {e}"))
                 }
-                res = binder::run(dry_run, &cluster_specs, &config, Some(store), Some(scheduler_state), record) => {
+                res = binder::run(
+                    dry_run,
+                    &cluster_specs,
+                    &config,
+                    Some(store),
+                    Some(scheduler_state),
+                    Some(snapshot_state),
+                    record,
+                ) => {
                     res
                 }
             }

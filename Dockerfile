@@ -1,3 +1,13 @@
+# --- Rust builder: compiles the k8s-bridge binary ---
+FROM rust:1.88-slim-bookworm AS rust-builder
+WORKDIR /build
+RUN apt-get update && apt-get install -y --no-install-recommends pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+RUN cargo build --release -p k8s-bridge
+
+# --- Runtime image: Python + UI + the Rust binary ---
 FROM ghcr.io/astral-sh/uv:python3.13-trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm \
@@ -6,6 +16,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm \
 WORKDIR /app
 RUN useradd --create-home appuser && chown -R appuser:appuser /app \
     && mkdir -p /data/live-state && chown appuser:appuser /data/live-state
+
+COPY --from=rust-builder /build/target/release/k8s-bridge /usr/local/bin/k8s-bridge
+
 USER appuser
 
 COPY --chown=appuser:appuser py-scheduler/scheduler/ui/package.json py-scheduler/scheduler/ui/package-lock.json py-scheduler/scheduler/ui/

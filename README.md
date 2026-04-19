@@ -86,7 +86,7 @@ Run both in separate terminals. The loop runner writes `latest-*.json` to `$LOOP
 - `scheduler-ui`: UI on port `8000`
 - `loop-runner-service`: solver tick loop (no HTTP server)
 
-`scripts/deploy-loop.sh` auto-rebuilds and restarts on `main` changes. A production overlay at `deploy/docker-compose.prod.yml` hides host ports and adds Pomerium.
+Production runs in GKE (see [`infra/`](infra/)), not docker-compose. Deploy with [`scripts/deploy.sh`](scripts/deploy.sh) — it builds the image, pushes to Artifact Registry, and rolls out the three Deployments (`k8s-bridge`, `load-generator`, `scheduler-ui`) in the `scheduler-system` namespace.
 
 ### Full stack (needs kind + Docker)
 

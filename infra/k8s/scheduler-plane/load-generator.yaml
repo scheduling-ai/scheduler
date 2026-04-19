@@ -1,0 +1,79 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: load-generator-state
+  namespace: scheduler-system
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 100Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: load-generator
+  namespace: scheduler-system
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: load-generator
+  template:
+    metadata:
+      labels:
+        app: load-generator
+    spec:
+      containers:
+        - name: generator
+          image: ${IMAGE}
+          imagePullPolicy: Always
+          command: ["uv", "run", "--frozen", "--no-sync", "load-generator"]
+          env:
+            - name: BRIDGE_URL
+              value: http://k8s-bridge:8080
+            - name: LOAD_GENERATOR_CONFIG_PATH
+              value: /state/config.json
+            - name: PORT
+              value: "8100"
+            - name: TAINT_KEY
+              value: scheduler.example.com/managed
+            - name: TAINT_VALUE
+              value: "true"
+            # Empty → Jobs omit the GPU resource request (no device plugin on
+            # the demo cluster), chip count goes through the annotation.
+            - name: CHIP_RESOURCE
+              value: ""
+            - name: CHIPS_ANNOTATION
+              value: scheduler.example.com/chips-per-replica
+          ports:
+            - name: http
+              containerPort: 8100
+          volumeMounts:
+            - name: state
+              mountPath: /state
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: load-generator-state
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: load-generator
+  namespace: scheduler-system
+spec:
+  selector:
+    app: load-generator
+  ports:
+    - name: http
+      port: 8100
+      targetPort: http

@@ -17,21 +17,29 @@ use tracing::info;
 use crate::job_store::{
     JobStatus, ManagedObject, SchedulerState, Workload, WorkloadState, WorkloadStore,
 };
+use crate::snapshot::{Frame, SnapshotState};
 
 #[derive(Clone)]
 struct AppState {
     store: WorkloadStore,
     scheduler: SchedulerState,
+    snapshot: SnapshotState,
 }
 
-/// Build the axum router with the workload store and scheduler state.
-pub fn router(store: WorkloadStore, scheduler: SchedulerState) -> Router {
-    let state = AppState { store, scheduler };
+/// Build the axum router with the workload store, scheduler state, and
+/// per-tick snapshot state surfaced at `GET /snapshot` for the UI.
+pub fn router(store: WorkloadStore, scheduler: SchedulerState, snapshot: SnapshotState) -> Router {
+    let state = AppState {
+        store,
+        scheduler,
+        snapshot,
+    };
     Router::new()
         .route("/jobs", post(submit_workload).get(list_workloads))
         .route("/jobs/{name}", get(get_workload).delete(delete_workload))
         .route("/status", get(get_status))
         .route("/status/{name}", get(get_job_status))
+        .route("/snapshot", get(get_snapshot))
         .with_state(state)
 }
 
@@ -188,6 +196,18 @@ async fn get_job_status(
         .job_statuses()
         .into_iter()
         .find(|j| j.name == name)
+        .map(Json)
+        .ok_or(StatusCode::NOT_FOUND)
+}
+
+/// Return the latest per-tick Frame snapshot, consumed by the UI's live mode.
+/// 404 until the binder has completed its first solve.
+async fn get_snapshot(State(state): State<AppState>) -> Result<Json<Frame>, StatusCode> {
+    state
+        .snapshot
+        .lock()
+        .await
+        .clone()
         .map(Json)
         .ok_or(StatusCode::NOT_FOUND)
 }

@@ -61,7 +61,16 @@ docker compose build
 
 ## Production deployment
 
-A cron-based deploy loop may be running on this machine (see `scripts/deploy-loop.sh`). It clones the repo to `/tmp/scheduler-deploy` and runs `docker compose up` there. **Do not `cd` into `/tmp/scheduler-deploy` or build there** — just push your changes and the deploy loop picks them up. After pushing, if `/tmp/deploy.log` exists check the deployment by looking at that file as well as docker compose logs health in `/tmp/scheduler-deploy` to verify the deploy succeeded.
+Production runs in GKE. Deploy manually with `scripts/deploy.sh` — it
+builds the image, pushes to Artifact Registry, and rolls out the three
+Deployments in `scheduler-system`. See `infra/README.md` for cluster
+setup (terraform + RBAC) and `infra/k8s/` for the manifests.
+
+The scheduler plane (`k8s-bridge`, `scheduler-ui`, `load-generator`) is
+logically separate from each data-plane cluster it schedules into,
+even when co-located for cost. Adding a second data-plane cluster is a
+config change (extra entry in the kubeconfig Secret + `--cluster` flag
+on the bridge), not a code change.
 
 ## Debugging the UI
 

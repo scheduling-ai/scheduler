@@ -88,6 +88,22 @@ locals {
   }
 }
 
+# --- Artifact Registry: hosts the scheduler container image ---
+
+resource "google_project_service" "artifactregistry" {
+  service            = "artifactregistry.googleapis.com"
+  disable_on_destroy = false
+}
+
+resource "google_artifact_registry_repository" "images" {
+  location      = "europe-west4"
+  repository_id = "scheduler"
+  format        = "DOCKER"
+  description   = "Scheduler container images (bridge, UI, generator)."
+
+  depends_on = [google_project_service.artifactregistry]
+}
+
 resource "google_container_node_pool" "chip" {
   for_each = local.chip_pools
 

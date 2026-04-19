@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import math
 import os
 import random
 from collections.abc import Callable
@@ -21,17 +20,23 @@ from time import perf_counter, sleep
 
 import sentry_sdk
 
+from scheduler.generator import GeneratorConfig, generate_cycle, read_config
 from scheduler.model import (
     ClusterState,
     Node,
     Phase,
     Pod,
-    PodReplicaStatus,
     Quota,
     ScheduleResult,
     SolverRequest,
 )
 from scheduler.solvers import SOLVERS
+
+__all__ = [
+    "GeneratorConfig",
+    "generate_cycle",
+    "read_config",
+]
 
 log = logging.getLogger(__name__)
 
@@ -64,168 +69,6 @@ DEFAULT_QUOTAS = [
     Quota("inference", {"us-east": {"H100": 16}, "eu-central": {"H100": 32}}),
     Quota("research", {"us-west": {"L40S": 24, "A100": 16}}),
 ]
-
-# ---------------------------------------------------------------------------
-# Generator config (read from disk)
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class GeneratorConfig:
-    seed: int = 7
-    arrival_rate: float = 0.15
-    burst_factor: float = 1.4
-    quota_weights: dict[str, float] = field(
-        default_factory=lambda: {"inference": 1.0, "research": 1.0, "training": 1.0}
-    )
-    chip_weights: dict[str, float] = field(
-        default_factory=lambda: {"A100": 1.0, "H100": 1.0, "H200": 1.0, "L40S": 0.7}
-    )
-    chips_weights: dict[int, float] = field(
-        default_factory=lambda: {1: 0.2, 2: 0.25, 4: 0.3, 8: 1.0}
-    )
-    priority_min: int = 30
-    priority_max: int = 99
-    replica_min: int = 1
-    replica_max: int = 2
-    runtime_min: float = 12.0
-    runtime_max: float = 40.0
-    gang_frequency: float = 0.08
-    replica_failure_rate: float = 0.03
-    node_failure_rate: float = 0.005
-    node_recovery_rate: float = 0.03
-    loop_interval_seconds: float = 5.0
-    running: bool = True
-
-    @classmethod
-    def from_dict(cls, data: dict) -> GeneratorConfig:
-        """Build from a JSON-parsed dict, ignoring unknown keys."""
-        known = {f.name for f in cls.__dataclass_fields__.values()}
-        if "chips_weights" in data and isinstance(data["chips_weights"], dict):
-            data = dict(data)
-            data["chips_weights"] = {int(k): float(v) for k, v in data["chips_weights"].items()}
-        return cls(**{k: v for k, v in data.items() if k in known})
-
-    def to_dict(self) -> dict:
-        result = asdict(self)
-        result["chips_weights"] = {str(k): v for k, v in result["chips_weights"].items()}
-        return result
-
-
-def read_config(path: Path) -> GeneratorConfig:
-    if not path.exists():
-        return GeneratorConfig()
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return GeneratorConfig.from_dict(data)
-    except (json.JSONDecodeError, TypeError, ValueError) as exc:
-        log.warning("bad config file %s: %s", path, exc)
-        return GeneratorConfig()
-
-
-# ---------------------------------------------------------------------------
-# Workload generation (pure functions + rng)
-# ---------------------------------------------------------------------------
-
-
-def _choose[T](rng: random.Random, weights: dict[T, float]) -> T:
-    items = list(weights.items())
-    total = sum(w for _, w in items)
-    target = rng.random() * total
-    acc = 0.0
-    for item, weight in items:
-        acc += weight
-        if target <= acc:
-            return item
-    return items[-1][0]
-
-
-def _unique_id(prefix: str = "job") -> str:
-    now = datetime.now(UTC)
-    return f"{prefix}-{now.strftime('%m%d-%H%M%S')}-{now.microsecond:06d}"
-
-
-def _make_job(rng: random.Random, cfg: GeneratorConfig) -> tuple[str, Pod, float]:
-    """Returns (job_id, pod, runtime_seconds)."""
-    runtime = round(rng.uniform(cfg.runtime_min, cfg.runtime_max), 2)
-    replicas = rng.randint(cfg.replica_min, cfg.replica_max)
-    job_id = _unique_id()
-    pod = Pod(
-        chips_per_replica=_choose(rng, cfg.chips_weights),
-        chip_type=_choose(rng, cfg.chip_weights),
-        priority=rng.randint(cfg.priority_min, cfg.priority_max),
-        quota=_choose(rng, cfg.quota_weights),
-        cluster=None,
-        statuses_by_replica=[PodReplicaStatus(Phase.RUNNING) for _ in range(replicas)],
-    )
-    return job_id, pod, runtime
-
-
-def generate_cycle(
-    rng: random.Random,
-    cfg: GeneratorConfig,
-    pods: dict[str, Pod],
-    runtimes: dict[str, float],
-    gangs: dict[str, str],
-    failed_nodes: set[str],
-    node_names: list[str],
-    dt: float,
-) -> None:
-    """Mutate *pods*, *runtimes*, *gangs*, and *failed_nodes* in place."""
-    # --- submissions ---
-    multiplier = 1.0 + (max(cfg.burst_factor, 1.0) - 1.0) * rng.random()
-    expected = max(0.0, cfg.arrival_rate * dt * multiplier)
-    count = math.floor(expected)
-    if rng.random() < expected - count:
-        count += 1
-
-    remaining = count
-    while remaining > 0:
-        if remaining >= 2 and rng.random() < cfg.gang_frequency:
-            gang_id = _unique_id("gang")
-            gang_size = min(remaining, 2 + int(rng.random() < 0.35))
-            for _ in range(gang_size):
-                job_id, pod, rt = _make_job(rng, cfg)
-                pods[job_id] = pod
-                runtimes[job_id] = rt
-                gangs[job_id] = gang_id
-            remaining -= gang_size
-            continue
-        job_id, pod, rt = _make_job(rng, cfg)
-        pods[job_id] = pod
-        runtimes[job_id] = rt
-        remaining -= 1
-
-    # --- replica failures ---
-    job_ids = list(pods.keys())
-    if job_ids and rng.random() < cfg.replica_failure_rate * dt:
-        target = rng.choice(job_ids)
-        pod = pods[target]
-        fail_count = 1 if rng.random() < 0.7 else 2
-        new_count = max(0, len(pod.statuses_by_replica) - fail_count)
-        if new_count <= 0:
-            del pods[target]
-            runtimes.pop(target, None)
-            gangs.pop(target, None)
-        else:
-            pods[target] = Pod(
-                pod.chips_per_replica,
-                pod.chip_type,
-                pod.priority,
-                pod.quota,
-                pod.cluster,
-                pod.statuses_by_replica[:new_count],
-            )
-
-    # --- node failures ---
-    healthy = [n for n in node_names if n not in failed_nodes]
-    if healthy and rng.random() < cfg.node_failure_rate * dt:
-        failed_nodes.add(rng.choice(healthy))
-
-    # --- node recoveries ---
-    if failed_nodes and rng.random() < cfg.node_recovery_rate * dt:
-        failed_nodes.discard(rng.choice(sorted(failed_nodes)))
-
 
 # ---------------------------------------------------------------------------
 # Solver tick helpers

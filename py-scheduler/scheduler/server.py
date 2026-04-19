@@ -1,21 +1,39 @@
-"""Minimal HTTP server: static UI, solve endpoint, state directory."""
+"""Minimal HTTP server: static UI, /api/solve for replay, thin proxy to
+``k8s-bridge`` (live-mode frames, job submission) and ``load-generator``
+(generator config).
+
+The UI polls ``/state/latest-<name>.json`` and reads/writes the generator at
+``/api/generator/config``. These URLs used to be backed by files on a shared
+volume written by ``loop-runner``; in cluster deployments they are now
+forwarded to the bridge and load-generator Services over HTTP. Two behaviours,
+one code path — selected by the presence of ``BRIDGE_URL`` /
+``GENERATOR_URL`` env vars so ``docker compose up`` (local dev) still works
+unmodified against ``loop-runner`` + the state directory.
+"""
 
 from __future__ import annotations
 
 import http.server
 import json
+import logging
 import os
 import time
+import urllib.error
+import urllib.request
 from dataclasses import asdict
 from pathlib import Path
 
-from scheduler.loop_runner import read_config
+from scheduler.generator import read_config
 from scheduler.model import solver_request_from_json
 from scheduler.solvers import SOLVERS
+
+log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent / "ui" / "dist"
 SCENARIO_DIR = Path(__file__).resolve().parent / "scenarios"
 STATE_DIR = Path(os.environ.get("LOOP_RUNNER_STATE_DIR", "/data/live-state"))
+BRIDGE_URL = os.environ.get("BRIDGE_URL", "").rstrip("/") or None
+GENERATOR_URL = os.environ.get("GENERATOR_URL", "").rstrip("/") or None
 
 SPA_ROUTES = {"/", "/index.html", "/live", "/replay", "/generator"}
 
@@ -37,6 +55,41 @@ def _read_json_body(handler: http.server.BaseHTTPRequestHandler) -> dict:
     return json.loads(body or "{}")
 
 
+def _proxy(
+    handler: http.server.BaseHTTPRequestHandler,
+    method: str,
+    url: str,
+    body: bytes | None = None,
+) -> None:
+    """Forward a request to `url` and stream the response body back.
+
+    Errors surface as JSON with the upstream status code, not a Python
+    traceback — the UI polls every 500 ms so a warm cache + warm network
+    matter more than detail.
+    """
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method=method,
+        headers={"Content-Type": "application/json"} if body else {},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            payload = resp.read()
+            handler.send_response(resp.status)
+            handler.send_header(
+                "Content-Type", resp.headers.get("Content-Type", "application/json")
+            )
+            handler.send_header("Content-Length", str(len(payload)))
+            handler.end_headers()
+            handler.wfile.write(payload)
+    except urllib.error.HTTPError as e:
+        msg = e.read().decode("utf-8", "replace") if e.fp else str(e)
+        _json_response(handler, {"error": msg}, e.code)
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        _json_response(handler, {"error": f"upstream unreachable: {e}"}, 502)
+
+
 def make_handler(
     *,
     state_dir: Path = STATE_DIR,
@@ -51,20 +104,31 @@ def make_handler(
         def do_GET(self):
             path = self.path.split("?")[0]
 
-            # State files: latest-*.json, config.json
             if path.startswith("/state/"):
                 rel = path[len("/state/") :]
+
                 if rel == "config.json":
-                    _json_response(self, read_config(config_path).to_dict())
+                    if GENERATOR_URL is not None:
+                        _proxy(self, "GET", f"{GENERATOR_URL}/config")
+                    else:
+                        _json_response(self, read_config(config_path).to_dict())
                     return
-                file = state_dir / rel
-                if file.exists() and file.is_file():
-                    self._serve_file(file, "application/json")
+
+                if rel.startswith("latest-") and rel.endswith(".json"):
+                    if BRIDGE_URL is not None:
+                        _proxy(self, "GET", f"{BRIDGE_URL}/snapshot")
+                        return
+                    # Local-dev path: read the file loop-runner wrote.
+                    file = state_dir / rel
+                    if file.exists() and file.is_file():
+                        self._serve_file(file, "application/json")
+                    else:
+                        _json_response(self, {"error": "not found"}, 404)
                     return
+
                 _json_response(self, {"error": "not found"}, 404)
                 return
 
-            # Scenario files
             if path.startswith("/scenarios/") and path.endswith(".jsonl"):
                 rel = path[len("/scenarios/") :]
                 file = SCENARIO_DIR / rel
@@ -74,7 +138,6 @@ def make_handler(
                 _json_response(self, {"error": "not found"}, 404)
                 return
 
-            # Scenario index
             if path == "/scenarios/index.json":
                 names = sorted(p.stem for p in SCENARIO_DIR.glob("*.jsonl"))
                 desc_file = SCENARIO_DIR / "descriptions.json"
@@ -90,12 +153,10 @@ def make_handler(
                 )
                 return
 
-            # Solver list
             if path == "/api/solvers":
                 _json_response(self, [{"name": k, "ref": k} for k in SOLVERS])
                 return
 
-            # SPA fallback
             if path in SPA_ROUTES or path.startswith("/scenarios/"):
                 self.path = "/index.html"
                 super().do_GET()
@@ -133,17 +194,31 @@ def make_handler(
                 return
 
             if path == "/api/generator/config":
-                body = _read_json_body(self)
+                if GENERATOR_URL is not None:
+                    body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                    _proxy(self, "POST", f"{GENERATOR_URL}/config", body)
+                    return
+
+                # Local-dev path: merge into config.json that loop-runner watches.
+                body_json = _read_json_body(self)
                 existing = {}
                 if config_path.exists():
                     try:
                         existing = json.loads(config_path.read_text(encoding="utf-8"))
                     except (json.JSONDecodeError, OSError):
                         pass
-                merged = {**existing, **body}
+                merged = {**existing, **body_json}
                 config_path.parent.mkdir(parents=True, exist_ok=True)
                 config_path.write_text(json.dumps(merged, indent=2), encoding="utf-8")
                 _json_response(self, {"running": merged.get("running", True), "config": merged})
+                return
+
+            if path == "/api/jobs":
+                if BRIDGE_URL is None:
+                    _json_response(self, {"error": "bridge not configured"}, 503)
+                    return
+                body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                _proxy(self, "POST", f"{BRIDGE_URL}/jobs", body)
                 return
 
             _json_response(self, {"error": "Not found"}, 404)

@@ -50,6 +50,7 @@ use crate::job_store::{
     WorkloadStore,
 };
 
+use crate::snapshot::{self, SnapshotState};
 use crate::solver;
 use crate::solver_types::{
     ClusterState as SolverCluster, Node as SolverNode, Phase, Pod as SolverPod,
@@ -74,6 +75,13 @@ pub struct BinderConfig {
     /// Used by test clusters that advertise chips via labels rather than
     /// a device plugin.
     pub chip_count_label: Option<String>,
+    /// If set, read the per-replica chip count from this annotation on
+    /// the Job/Pod as a fallback when `resources.requests[chip_resource]`
+    /// is missing or zero. Used by demo clusters without a GPU device
+    /// plugin: the workload can't request `nvidia.com/gpu` (kubelet would
+    /// reject the pod) but the scheduler still needs to know how many
+    /// chips each replica needs.
+    pub chips_annotation: Option<String>,
     pub job_name_label: String,
     pub priority_annotation: String,
     pub quota_annotation: String,
@@ -95,6 +103,7 @@ impl Default for BinderConfig {
             chip_label: "accelerator".into(),
             chip_resource: "nvidia.com/gpu".into(),
             chip_count_label: None,
+            chips_annotation: None,
             job_name_label: "scheduler.example.com/job-name".into(),
             priority_annotation: "scheduler.example.com/priority".into(),
             quota_annotation: "scheduler.example.com/quota".into(),
@@ -340,6 +349,7 @@ pub async fn run(
     config: &BinderConfig,
     store: Option<WorkloadStore>,
     scheduler_state: Option<SchedulerState>,
+    snapshot_state: Option<SnapshotState>,
     record_path: Option<std::path::PathBuf>,
 ) -> Result<()> {
     anyhow::ensure!(
@@ -382,6 +392,7 @@ pub async fn run(
     // solver request during the gap cycle.
     const PENDING_TTL: Duration = Duration::from_secs(30);
     let mut pending_node_assignments: PendingNodeMap = HashMap::new();
+    let mut seq: u64 = 0;
     loop {
         interval.tick().await;
 
@@ -466,6 +477,20 @@ pub async fn run(
             })
         });
         if !has_cluster_jobs && !has_cluster_pods && store_snapshot.is_empty() {
+            // No work this cycle — still emit a snapshot so the UI sees
+            // cluster capacity and heartbeats. Mirrors `loop_runner`'s
+            // "empty" frame (py-scheduler/scheduler/loop_runner.py:455).
+            seq += 1;
+            if let Some(ref snap) = snapshot_state {
+                let request = build_solver_request_multi(
+                    &runtimes,
+                    config,
+                    &store_snapshot,
+                    &mut pending_node_assignments,
+                );
+                let frame = snapshot::build_frame(seq, &config.solver_name, &request, "empty", 0);
+                *snap.lock().await = Some(frame);
+            }
             continue;
         }
 
@@ -486,7 +511,28 @@ pub async fn run(
             &mut pending_node_assignments,
         );
 
-        match solver::call_solver(&request, record_path.as_deref(), &config.solver_name).await {
+        seq += 1;
+        let solve_started = std::time::Instant::now();
+        let solve_outcome =
+            solver::call_solver(&request, record_path.as_deref(), &config.solver_name).await;
+        let duration_ms = solve_started.elapsed().as_millis() as u64;
+
+        if let Some(ref snap) = snapshot_state {
+            let solver_status = match &solve_outcome {
+                Ok(r) => r.solver_status.clone(),
+                Err(_) => "error".to_string(),
+            };
+            let frame = snapshot::build_frame(
+                seq,
+                &config.solver_name,
+                &request,
+                &solver_status,
+                duration_ms,
+            );
+            *snap.lock().await = Some(frame);
+        }
+
+        match solve_outcome {
             Ok(result) => {
                 let diff = diff_schedule(&request, &result);
 
@@ -716,13 +762,18 @@ fn extract_job_metadata(job: &K8sJob, config: &BinderConfig) -> (u32, String, i3
     let spec = job.spec.as_ref();
     let pod_spec = spec.and_then(|s| s.template.spec.as_ref());
 
-    let chips = pod_spec
+    let chips_from_resource = pod_spec
         .and_then(|ps| ps.containers.first())
         .and_then(|c| c.resources.as_ref())
         .and_then(|r| r.requests.as_ref())
         .and_then(|r| r.get(&config.chip_resource))
         .and_then(|q| q.0.parse::<u32>().ok())
         .unwrap_or(0);
+    let chips = if chips_from_resource > 0 {
+        chips_from_resource
+    } else {
+        chips_from_annotation(job.annotations(), config)
+    };
 
     let chip_type = job
         .labels()
@@ -751,13 +802,18 @@ fn extract_job_metadata(job: &K8sJob, config: &BinderConfig) -> (u32, String, i3
 fn extract_pod_metadata(pod: &Pod, config: &BinderConfig) -> (u32, String, i32, String, u32) {
     let pod_spec = pod.spec.as_ref();
 
-    let chips = pod_spec
+    let chips_from_resource = pod_spec
         .and_then(|ps| ps.containers.first())
         .and_then(|c| c.resources.as_ref())
         .and_then(|r| r.requests.as_ref())
         .and_then(|r| r.get(&config.chip_resource))
         .and_then(|q| q.0.parse::<u32>().ok())
         .unwrap_or(0);
+    let chips = if chips_from_resource > 0 {
+        chips_from_resource
+    } else {
+        chips_from_annotation(pod.annotations(), config)
+    };
 
     let chip_type = pod
         .labels()
@@ -1993,6 +2049,21 @@ async fn update_scheduler_state(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Read per-replica chip count from the configured annotation (if any).
+/// Falls back to 0 if unset or unparseable — used only as a fallback when
+/// the workload's resource request is missing/zero.
+fn chips_from_annotation(
+    annotations: &std::collections::BTreeMap<String, String>,
+    config: &BinderConfig,
+) -> u32 {
+    config
+        .chips_annotation
+        .as_deref()
+        .and_then(|k| annotations.get(k))
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(0)
+}
 
 /// Read per-node chip count. If `chip_count_label` is set, the count comes
 /// from that node label (used by test clusters without a device plugin);

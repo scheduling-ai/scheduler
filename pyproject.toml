@@ -24,6 +24,7 @@ module-root = "py-scheduler"
 [project.scripts]
 scheduler-ui = "scheduler.server:main"
 loop-runner = "scheduler.loop_runner:main"
+load-generator = "scheduler.load_generator:main"
 
 [dependency-groups]
 dev = [

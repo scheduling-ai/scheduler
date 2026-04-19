@@ -1,0 +1,58 @@
+# Pomerium auth proxy, port of `deploy/docker-compose.prod.yml`.
+#
+# Requires a Secret named `pomerium-zero` with key `POMERIUM_ZERO_TOKEN`.
+# Create it once with:
+#   kubectl -n scheduler-system create secret generic pomerium-zero \
+#     --from-literal=POMERIUM_ZERO_TOKEN=<token>
+#
+# Configure the upstream route in the Pomerium Zero dashboard to point at
+# the in-cluster Service `http://scheduler-ui.scheduler-system.svc:80`.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pomerium
+  namespace: scheduler-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pomerium
+  template:
+    metadata:
+      labels:
+        app: pomerium
+    spec:
+      containers:
+        - name: pomerium
+          image: pomerium/pomerium:latest
+          env:
+            - name: XDG_CACHE_HOME
+              value: /var/cache
+            - name: POMERIUM_ZERO_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: pomerium-zero
+                  key: POMERIUM_ZERO_TOKEN
+          ports:
+            - name: https
+              containerPort: 443
+          volumeMounts:
+            - name: cache
+              mountPath: /var/cache
+      volumes:
+        - name: cache
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pomerium
+  namespace: scheduler-system
+spec:
+  type: LoadBalancer
+  selector:
+    app: pomerium
+  ports:
+    - name: https
+      port: 443
+      targetPort: https
