@@ -15,11 +15,11 @@ class SimState {
   currentSource = $state<"none" | "live" | "scenario" | "file">("none");
   currentScenarioName = $state("production_scale");
   currentSessionUrl = $state("");
-  liveScheduler = $state("heuristic");
+  liveScheduler = $state("milp");
   replayRunSolver = $state(true);
-  replaySolver = $state("heuristic");
-  homeLiveScheduler = $state("heuristic");
-  homeScenarioSolver = $state("heuristic");
+  replaySolver = $state("milp");
+  homeLiveScheduler = $state("milp");
+  homeScenarioSolver = $state("milp");
   selectedPod = $state<string | null>(null);
   selectedGangIdx = $state<number | null>(null);
   selectedQuota = $state<string | null>(null);
@@ -267,10 +267,10 @@ class SimState {
   async loadSolvers() {
     const data = await fetchJson("/api/solvers");
     this.solvers = data;
-    this.replaySolver = "heuristic";
-    this.liveScheduler = "heuristic";
-    this.homeLiveScheduler = "heuristic";
-    this.homeScenarioSolver = "heuristic";
+    this.replaySolver = "milp";
+    this.liveScheduler = "milp";
+    this.homeLiveScheduler = "milp";
+    this.homeScenarioSolver = "milp";
   }
   disconnectLive() {
     if (this.livePollTimer) {
@@ -325,7 +325,7 @@ class SimState {
   ) {
     this.disconnectLive();
     const name = options.name || this.scenarios[0]?.name || "gang_scheduling";
-    const solver = options.solver || this.homeScenarioSolver || "heuristic";
+    const solver = options.solver || this.homeScenarioSolver || "milp";
     const response = await fetch(
       `/scenarios/${encodeURIComponent(name)}.jsonl`,
     );
@@ -373,7 +373,7 @@ class SimState {
     this.currentSource = "file";
     this.currentScenarioName = "";
     this.currentSessionUrl = routeParams.session || "";
-    this.replaySolver = routeParams.solver || this.replaySolver || "heuristic";
+    this.replaySolver = routeParams.solver || this.replaySolver || "milp";
     this.replayRunSolver = routeParams.runSolver ?? true;
     this.initApp("replay");
     this.syncRoute();
@@ -669,7 +669,7 @@ class SimState {
     if (pathname === "/replay" && params.get("session")) {
       try {
         await this.loadUrl(params.get("session")!, {
-          solver: params.get("solver") || "heuristic",
+          solver: params.get("solver") || "milp",
           runSolver: params.get("run_solver") === "1",
           frame: Number(params.get("frame") || 0),
         });
@@ -699,7 +699,7 @@ class SimState {
         try {
           await this.loadScenario({
             name: scenario,
-            solver: params.get("solver") || "heuristic",
+            solver: params.get("solver") || "milp",
             frame: Number(params.get("frame") || 0),
           });
           return;
@@ -711,7 +711,7 @@ class SimState {
     if (params.get("session")) {
       try {
         await this.loadUrl(params.get("session")!, {
-          solver: params.get("solver") || "heuristic",
+          solver: params.get("solver") || "milp",
           runSolver: params.get("run_solver") === "1",
           frame: Number(params.get("frame") || 0),
         });
