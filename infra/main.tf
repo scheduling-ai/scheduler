@@ -88,6 +88,28 @@ locals {
   }
 }
 
+# --- System node pool: untainted, hosts GKE system pods (kube-dns, etc.) ---
+#
+# Every chip pool is tainted `scheduler.example.com/managed=true:NoSchedule`
+# so the kube-scheduler keeps other workloads off the fake-GPU nodes.
+# GKE-managed addons (kube-dns, kube-dns-autoscaler) can't tolerate that
+# taint, so without a clean pool they stay Pending and cluster DNS is
+# broken. One tiny e2-micro is enough; spot keeps it nearly free.
+resource "google_container_node_pool" "system" {
+  name       = "system"
+  cluster    = google_container_cluster.this.name
+  location   = var.zone
+  node_count = 1
+
+  node_config {
+    machine_type = "e2-micro"
+    spot         = true
+    disk_size_gb = 15
+    disk_type    = "pd-standard"
+    oauth_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+  }
+}
+
 # --- Artifact Registry: hosts the scheduler container image ---
 
 resource "google_project_service" "artifactregistry" {

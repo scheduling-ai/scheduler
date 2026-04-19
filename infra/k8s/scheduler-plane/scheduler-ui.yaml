@@ -13,6 +13,11 @@ spec:
       labels:
         app: scheduler-ui
     spec:
+      tolerations:
+        - key: scheduler.example.com/managed
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
       containers:
         - name: ui
           image: ${IMAGE}

@@ -116,17 +116,19 @@ def _build_job(sub: NewSubmission) -> dict:
             "limits": {"cpu": "50m", "memory": "32Mi"},
         }
 
+    pod_labels = {
+        "accelerator": pod.chip_type,
+        JOB_NAME_LABEL: sub.job_id,
+        MANAGED_BY_LABEL: SCHEDULER_NAME,
+    }
+
     return {
         "apiVersion": "batch/v1",
         "kind": "Job",
         "metadata": {
             "name": sub.job_id,
             "namespace": JOB_NAMESPACE,
-            "labels": {
-                "accelerator": pod.chip_type,
-                JOB_NAME_LABEL: sub.job_id,
-                MANAGED_BY_LABEL: SCHEDULER_NAME,
-            },
+            "labels": pod_labels,
             "annotations": annotations,
         },
         "spec": {
@@ -135,6 +137,10 @@ def _build_job(sub: NewSubmission) -> dict:
             "completions": replicas,
             "backoffLimit": 0,
             "template": {
+                # Pods must carry the same job-name / managed-by labels —
+                # `binder.rs::bind_pending_pods` filters by them when
+                # deciding which pods to bind via the k8s Binding API.
+                "metadata": {"labels": pod_labels},
                 "spec": {
                     "schedulerName": SCHEDULER_NAME,
                     "tolerations": [
@@ -147,7 +153,7 @@ def _build_job(sub: NewSubmission) -> dict:
                     ],
                     "containers": [container],
                     "restartPolicy": "Never",
-                }
+                },
             },
         },
     }

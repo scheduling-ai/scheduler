@@ -26,6 +26,11 @@ spec:
       labels:
         app: load-generator
     spec:
+      tolerations:
+        - key: scheduler.example.com/managed
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
       containers:
         - name: generator
           image: ${IMAGE}

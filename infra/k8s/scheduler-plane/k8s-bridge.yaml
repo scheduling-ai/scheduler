@@ -17,6 +17,13 @@ spec:
         app: k8s-bridge
     spec:
       serviceAccountName: scheduler
+      # Every node in the demo cluster carries this taint (see infra/main.tf).
+      # Co-locating the scheduler plane means tolerating it.
+      tolerations:
+        - key: scheduler.example.com/managed
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
       containers:
         - name: bridge
           image: ${IMAGE}
@@ -36,6 +43,8 @@ spec:
             - "true"
             - --solver
             - milp
+            - --quotas
+            - /etc/quotas/quotas.json
             - --port
             - "8080"
           env:
@@ -50,6 +59,9 @@ spec:
             - name: kubeconfig
               mountPath: /etc/kubeconfig
               readOnly: true
+            - name: quotas
+              mountPath: /etc/quotas
+              readOnly: true
           readinessProbe:
             httpGet:
               path: /status
@@ -60,6 +72,9 @@ spec:
         - name: kubeconfig
           configMap:
             name: data-plane-kubeconfig
+        - name: quotas
+          configMap:
+            name: scheduler-quotas
 ---
 apiVersion: v1
 kind: Service
