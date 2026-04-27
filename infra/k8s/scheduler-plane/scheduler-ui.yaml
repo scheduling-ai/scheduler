@@ -13,11 +13,6 @@ spec:
       labels:
         app: scheduler-ui
     spec:
-      tolerations:
-        - key: scheduler.example.com/managed
-          operator: Equal
-          value: "true"
-          effect: NoSchedule
       containers:
         - name: ui
           image: ${IMAGE}
@@ -30,6 +25,12 @@ spec:
               value: http://load-generator:8100
             - name: PORT
               value: "8000"
+            - name: SENTRY_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: sentry
+                  key: SENTRY_DSN
+                  optional: true
           ports:
             - name: http
               containerPort: 8000

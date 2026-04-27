@@ -17,13 +17,9 @@ spec:
         app: k8s-bridge
     spec:
       serviceAccountName: scheduler
-      # Every node in the demo cluster carries this taint (see infra/main.tf).
-      # Co-locating the scheduler plane means tolerating it.
-      tolerations:
-        - key: scheduler.example.com/managed
-          operator: Equal
-          value: "true"
-          effect: NoSchedule
+      # No toleration for scheduler.example.com/managed — chip pools carry
+      # that taint, and we want this off the chip nodes so we never starve
+      # an e2-micro kubelet. The system pool is untainted.
       containers:
         - name: bridge
           image: ${IMAGE}

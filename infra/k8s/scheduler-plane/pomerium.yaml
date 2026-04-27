@@ -22,11 +22,6 @@ spec:
       labels:
         app: pomerium
     spec:
-      tolerations:
-        - key: scheduler.example.com/managed
-          operator: Equal
-          value: "true"
-          effect: NoSchedule
       containers:
         - name: pomerium
           image: pomerium/pomerium:latest

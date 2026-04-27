@@ -111,9 +111,12 @@ def _build_job(sub: NewSubmission) -> dict:
     else:
         # GKE demo cluster has no device plugin; skip the GPU request so
         # kubelet admits the pod. Chip count travels via CHIPS_ANNOTATION.
+        # Memory request reflects what busybox-sleep actually consumes
+        # plus pod overhead, so kubelet's eviction accounting is honest
+        # — the chip nodes are e2-micro and have little headroom.
         container["resources"] = {
-            "requests": {"cpu": "1m", "memory": "4Mi"},
-            "limits": {"cpu": "50m", "memory": "32Mi"},
+            "requests": {"cpu": "1m", "memory": "16Mi"},
+            "limits": {"cpu": "50m", "memory": "64Mi"},
         }
 
     pod_labels = {

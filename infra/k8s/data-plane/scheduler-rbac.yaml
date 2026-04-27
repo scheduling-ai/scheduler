@@ -42,6 +42,13 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["create", "patch", "delete"]
+  # Acting as the scheduler: POST /api/v1/namespaces/{ns}/pods/{name}/binding
+  # is a separate `pods/binding` subresource. `create` on `pods` alone does
+  # not cover it — without this the binder's bind_pod() call 403s and every
+  # Pending pod stays Pending forever.
+  - apiGroups: [""]
+    resources: ["pods/binding"]
+    verbs: ["create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

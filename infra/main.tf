@@ -94,7 +94,12 @@ locals {
 # so the kube-scheduler keeps other workloads off the fake-GPU nodes.
 # GKE-managed addons (kube-dns, kube-dns-autoscaler) can't tolerate that
 # taint, so without a clean pool they stay Pending and cluster DNS is
-# broken. One tiny e2-micro is enough; spot keeps it nearly free.
+# broken. The scheduler plane (k8s-bridge, scheduler-ui, load-generator,
+# pomerium) also runs here — keeping it off the chip pools means kubelet
+# on the e2-micro chip nodes isn't squeezed when scheduler-plane pods
+# co-locate. e2-medium (4 GiB) fits the addons + scheduler plane;
+# smaller types OOM kube-dns or leave no room for our services.
+# Spot keeps it cheap.
 resource "google_container_node_pool" "system" {
   name       = "system"
   cluster    = google_container_cluster.this.name
@@ -102,7 +107,7 @@ resource "google_container_node_pool" "system" {
   node_count = 1
 
   node_config {
-    machine_type = "e2-micro"
+    machine_type = "e2-medium"
     spot         = true
     disk_size_gb = 15
     disk_type    = "pd-standard"
