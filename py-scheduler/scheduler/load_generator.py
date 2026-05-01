@@ -139,6 +139,10 @@ def _build_job(sub: NewSubmission) -> dict:
             "parallelism": replicas,
             "completions": replicas,
             "backoffLimit": 0,
+            # Without this, finished Jobs accumulate in etcd indefinitely —
+            # the bridge then feeds them all to the solver/snapshot every
+            # tick, bloating the queue counter and the UI payload.
+            "ttlSecondsAfterFinished": 60,
             "template": {
                 # Pods must carry the same job-name / managed-by labels —
                 # `binder.rs::bind_pending_pods` filters by them when

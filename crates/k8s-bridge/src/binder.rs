@@ -875,10 +875,26 @@ fn build_cluster_state(
             None => job.name_any(),
         };
 
+        // Skip terminal Jobs entirely. Without this, every completed/failed
+        // Job that hasn't been GC'd by k8s would be padded with phantom
+        // "Running/None" replicas (see build_replica_statuses_from_job_pods)
+        // and reach the solver/snapshot as zombie queued work.
+        if is_job_finished(&job) {
+            pending_nodes.remove(&job_name);
+            continue;
+        }
+
         let (chips, chip_type, priority, quota, parallelism) = extract_job_metadata(&job, config);
 
         let is_suspended = job.spec.as_ref().and_then(|s| s.suspend).unwrap_or(false);
 
+        // Three placement states for an active Job's pods, in priority order:
+        //   1. Pods bound to nodes (reflector-confirmed) — use their nodes.
+        //   2. Pending-nodes entry — placement decision in flight.
+        //   3. Neither — orphaned. Pods missed their binding window (bridge
+        //      restart, expired PENDING_TTL, etc.) and the solver has lost
+        //      track. Emit with cluster=None so the solver re-schedules.
+        let mut orphan = false;
         let statuses_by_replica = if is_suspended {
             // `spec.suspend=true` has been patched, but pods may still be
             // terminating (graceful shutdown window, up to 30 s by default).
@@ -898,36 +914,41 @@ fn build_cluster_state(
                     })
                     .collect()
             }
-        } else {
-            // Not suspended: check whether pods are already visible.
-            if pods_exist_for_job(pod_store, &job) {
-                // Reflector has confirmed the pods — clear any pending entry.
-                pending_nodes.remove(&job_name);
-                build_replica_statuses_from_job_pods(pod_store, &job, parallelism)
-            } else if let Some((node_counts, _, _)) = pending_nodes.get(&job_name) {
-                // Pods not yet visible but we know where they were placed.
-                // Reconstruct statuses from the recorded node assignments so
-                // those nodes appear occupied to the solver this cycle.
-                let mut s: Vec<SolverReplicaStatus> = node_counts
-                    .iter()
-                    .flat_map(|(node, &count)| {
-                        (0..count).map(move |_| SolverReplicaStatus {
-                            phase: Phase::Running,
-                            node: Some(node.clone()),
-                        })
-                    })
-                    .collect();
-                while (s.len() as u32) < parallelism {
-                    s.push(SolverReplicaStatus {
+        } else if pods_exist_for_job(pod_store, &job) {
+            // Reflector has confirmed the pods — clear any pending entry.
+            pending_nodes.remove(&job_name);
+            build_replica_statuses_from_job_pods(pod_store, &job, parallelism)
+        } else if let Some((node_counts, _, _)) = pending_nodes.get(&job_name) {
+            // Pods not yet visible but we know where they were placed.
+            // Reconstruct statuses from the recorded node assignments so
+            // those nodes appear occupied to the solver this cycle.
+            let mut s: Vec<SolverReplicaStatus> = node_counts
+                .iter()
+                .flat_map(|(node, &count)| {
+                    (0..count).map(move |_| SolverReplicaStatus {
                         phase: Phase::Running,
-                        node: None,
-                    });
-                }
-                s
-            } else {
-                // No pods and no pending info — pad with Running/None as usual.
-                build_replica_statuses_from_job_pods(pod_store, &job, parallelism)
+                        node: Some(node.clone()),
+                    })
+                })
+                .collect();
+            while (s.len() as u32) < parallelism {
+                s.push(SolverReplicaStatus {
+                    phase: Phase::Running,
+                    node: None,
+                });
             }
+            s
+        } else {
+            // Orphan: no bound pods, no in-flight placement.  Emit as
+            // fresh-pending so the solver picks new nodes; the next cycle's
+            // bind_pending_pods will bind the existing Pending pods to them.
+            orphan = true;
+            (0..parallelism)
+                .map(|_| SolverReplicaStatus {
+                    phase: Phase::Running,
+                    node: None,
+                })
+                .collect()
         };
 
         solver_pods.insert(
@@ -937,7 +958,11 @@ fn build_cluster_state(
                 chip_type,
                 priority,
                 quota,
-                cluster: Some(cluster_name.to_string()),
+                cluster: if orphan {
+                    None
+                } else {
+                    Some(cluster_name.to_string())
+                },
                 statuses_by_replica,
             },
         );
@@ -1070,6 +1095,31 @@ fn build_cluster_state(
 /// excluded: `pending_node_assignments` remains authoritative until the
 /// reflector confirms a bound pod, ensuring the solver does not see those
 /// nodes as free between placement and binding confirmation.
+/// Returns true if the Job is in a terminal state (Complete or Failed).
+///
+/// Detection is conservative — we trust the Job controller's own signals:
+/// a `Complete`/`Failed` condition with status=True, or `completionTime` set.
+/// We deliberately do not infer terminality from `succeeded`/`failed` counts
+/// because a Job can transiently show `succeeded == completions` before the
+/// controller writes the condition, and we'd rather pick the Job up one
+/// extra cycle than skip an active one.
+fn is_job_finished(job: &K8sJob) -> bool {
+    let Some(status) = job.status.as_ref() else {
+        return false;
+    };
+    if status.completion_time.is_some() {
+        return true;
+    }
+    if let Some(conditions) = status.conditions.as_ref() {
+        for c in conditions {
+            if (c.type_ == "Complete" || c.type_ == "Failed") && c.status == "True" {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn pods_exist_for_job(pod_store: &reflector::Store<Pod>, job: &K8sJob) -> bool {
     let job_uid = job.metadata.uid.as_deref().unwrap_or("");
     pod_store.state().iter().any(|pod| {
@@ -2975,6 +3025,167 @@ mod tests {
         assert!(
             !pending.contains_key("wl-1"),
             "pending entry must be cleared once pod is confirmed bound"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // build_cluster_state — Job-finished filtering and orphan recovery
+    // -----------------------------------------------------------------------
+
+    use k8s_openapi::api::batch::v1::{JobCondition, JobStatus};
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
+    use k8s_openapi::jiff::Timestamp;
+
+    fn finished_job(uid: &str, condition_type: &str, config: &BinderConfig) -> K8sJob {
+        let mut job = test_job(uid, false, 1, config);
+        job.status = Some(JobStatus {
+            completion_time: Some(Time(Timestamp::now())),
+            conditions: Some(vec![JobCondition {
+                type_: condition_type.to_string(),
+                status: "True".to_string(),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        });
+        job
+    }
+
+    /// Helper that sets a unique k8s name and workload label on a test Job so
+    /// multiple Jobs can co-exist in the reflector store (which keys by name).
+    fn relabel(job: &mut K8sJob, k8s_name: &str, wl_name: &str, config: &BinderConfig) {
+        job.metadata.name = Some(k8s_name.to_string());
+        job.metadata
+            .labels
+            .as_mut()
+            .unwrap()
+            .insert(config.job_name_label.clone(), wl_name.to_string());
+    }
+
+    /// A finished Job must not appear in the solver request at all — otherwise
+    /// every completed Job in etcd accumulates as zombie queued work, bloating
+    /// the snapshot and the UI payload.
+    #[test]
+    fn finished_jobs_are_filtered_out() {
+        let config = BinderConfig::default();
+        let mut active = test_job("uid-active", false, 1, &config);
+        relabel(&mut active, "k8s-active", "wl-active", &config);
+        let mut completed = finished_job("uid-done", "Complete", &config);
+        relabel(&mut completed, "k8s-done", "wl-done", &config);
+        let mut failed = finished_job("uid-fail", "Failed", &config);
+        relabel(&mut failed, "k8s-fail", "wl-fail", &config);
+
+        let (_cl, pods) = build_cluster_state(
+            &empty_node_store(),
+            &make_pod_store(vec![]),
+            &make_job_store(vec![active, completed, failed]),
+            "cluster-a",
+            &config,
+            &mut HashMap::new(),
+        );
+
+        assert!(pods.contains_key("wl-active"), "active Job must remain");
+        assert!(
+            !pods.contains_key("wl-done"),
+            "Complete Job must be filtered out"
+        );
+        assert!(
+            !pods.contains_key("wl-fail"),
+            "Failed Job must be filtered out"
+        );
+    }
+
+    /// A finished Job must also clear any stale pending-nodes entry — otherwise
+    /// the entry would linger until the 30s TTL expires, and the gap-cycle
+    /// injection in build_solver_request_multi would keep emitting a phantom
+    /// running pod.
+    #[test]
+    fn finished_job_clears_pending_entry() {
+        let config = BinderConfig::default();
+        let job = finished_job("uid-1", "Complete", &config);
+
+        let mut pending = [(
+            "wl-1".to_string(),
+            (
+                [("node-042".to_string(), 1u32)]
+                    .into_iter()
+                    .collect::<HashMap<_, _>>(),
+                std::time::Instant::now(),
+                None,
+            ),
+        )]
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+
+        let (_cl, pods) = build_cluster_state(
+            &empty_node_store(),
+            &make_pod_store(vec![]),
+            &make_job_store(vec![job]),
+            "cluster-a",
+            &config,
+            &mut pending,
+        );
+
+        assert!(!pods.contains_key("wl-1"));
+        assert!(
+            !pending.contains_key("wl-1"),
+            "stale pending entry for finished Job must be cleared"
+        );
+    }
+
+    /// Orphan recovery: an active Job whose pods exist as Pending without any
+    /// node assigned, and with no pending-nodes entry, must be re-emitted with
+    /// cluster=None so the solver re-schedules it.  Without this, the pod is
+    /// stuck forever (the bridge has lost its placement decision and the
+    /// solver classifies the pod as passthrough).
+    #[test]
+    fn orphan_active_job_emitted_as_unscheduled() {
+        let config = BinderConfig::default();
+        let job = test_job("uid-1", false, 1, &config);
+        let pod = test_pod_unbound("pod-0", "uid-1");
+
+        let (_cl, pods) = build_cluster_state(
+            &empty_node_store(),
+            &make_pod_store(vec![pod]),
+            &make_job_store(vec![job]),
+            "cluster-a",
+            &config,
+            &mut HashMap::new(),
+        );
+
+        let solver_pod = &pods["wl-1"];
+        assert!(
+            solver_pod.cluster.is_none(),
+            "orphan Job must be emitted with cluster=None so the solver re-schedules it; \
+             got cluster={:?}",
+            solver_pod.cluster
+        );
+        assert_eq!(solver_pod.statuses_by_replica.len(), 1);
+        assert_eq!(solver_pod.statuses_by_replica[0].phase, Phase::Running);
+        assert!(solver_pod.statuses_by_replica[0].node.is_none());
+    }
+
+    /// A normal active Job whose pods are bound to nodes must continue to be
+    /// emitted with the cluster set — the orphan branch must not fire when
+    /// pods are healthy.
+    #[test]
+    fn healthy_active_job_keeps_cluster_set() {
+        let config = BinderConfig::default();
+        let job = test_job("uid-1", false, 1, &config);
+        let pod = test_pod("pod-0", "uid-1", "node-042");
+
+        let (_cl, pods) = build_cluster_state(
+            &empty_node_store(),
+            &make_pod_store(vec![pod]),
+            &make_job_store(vec![job]),
+            "cluster-a",
+            &config,
+            &mut HashMap::new(),
+        );
+
+        assert_eq!(
+            pods["wl-1"].cluster.as_deref(),
+            Some("cluster-a"),
+            "active Job with bound pods must keep its cluster"
         );
     }
 
