@@ -63,9 +63,16 @@ kubectl -n default delete jobs \
   --cascade=background --wait=false --ignore-not-found
 
 echo "==> Applying scheduler-plane manifests"
+# SENTRY_DEBUG defaults to empty so the /debug/sentry endpoints stay 404.
+# Set SENTRY_DEBUG=1 in the environment before invoking deploy.sh to enable
+# them for ad-hoc verification — never bake that on permanently.
+SENTRY_DEBUG_VALUE="${SENTRY_DEBUG:-}"
 for f in infra/k8s/scheduler-plane/*.yaml; do
   # Use sed so we don't depend on envsubst being installed.
-  sed "s|\${IMAGE}|${IMAGE}|g" "${f}" | kubectl apply -f -
+  sed -e "s|\${IMAGE}|${IMAGE}|g" \
+      -e "s|\${GIT_SHA}|${SHA}|g" \
+      -e "s|\${SENTRY_DEBUG}|${SENTRY_DEBUG_VALUE}|g" \
+      "${f}" | kubectl apply -f -
 done
 
 echo "==> Waiting for rollouts"

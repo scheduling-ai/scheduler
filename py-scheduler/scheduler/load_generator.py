@@ -243,6 +243,14 @@ def make_handler(state: State) -> type[http.server.BaseHTTPRequestHandler]:
                 # Trigger an explicit Sentry capture from inside the deployed
                 # pod so we can verify the SDK is initialised, the DSN works,
                 # and outbound network reaches Sentry. Returns the event_id.
+                #
+                # Gated by SENTRY_DEBUG=1 so we don't ship a permanent test
+                # surface — set it via deploy.sh's env for ad-hoc verification,
+                # then re-deploy without it.
+                if os.environ.get("SENTRY_DEBUG") != "1":
+                    self._reply({"error": "not found"}, 404)
+                    return
+
                 import sentry_sdk
 
                 marker = f"sentry-test-{os.environ.get('GIT_SHA', 'dev')}-{int(time.time())}"

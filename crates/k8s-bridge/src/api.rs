@@ -40,7 +40,60 @@ pub fn router(store: WorkloadStore, scheduler: SchedulerState, snapshot: Snapsho
         .route("/status", get(get_status))
         .route("/status/{name}", get(get_job_status))
         .route("/snapshot", get(get_snapshot))
+        .route("/debug/sentry", post(debug_sentry))
         .with_state(state)
+}
+
+/// Verifies Sentry SDK init + DSN reachability from inside the deployed
+/// pod. Captures one info message and one explicit error event, flushes,
+/// and returns the event IDs so the caller can confirm delivery via the
+/// Sentry MCP / web UI.
+///
+/// Gated by `SENTRY_DEBUG=1` so we don't ship a permanent test path that
+/// pollutes the inbox if hit by accident. Returns 404 otherwise.
+async fn debug_sentry() -> Result<Json<serde_json::Value>, StatusCode> {
+    if std::env::var("SENTRY_DEBUG").as_deref() != Ok("1") {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let marker = format!(
+        "sentry-test-{}-{}",
+        std::env::var("GIT_SHA").unwrap_or_else(|_| "dev".into()),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+    );
+
+    let info_id = sentry::capture_message(
+        &format!("k8s-bridge sentry test ({marker})"),
+        sentry::Level::Info,
+    );
+
+    #[derive(Debug)]
+    struct DebugError(String);
+    impl std::fmt::Display for DebugError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.0)
+        }
+    }
+    impl std::error::Error for DebugError {}
+
+    let err = DebugError(format!("intentional sentry test exception ({marker})"));
+    let exc_id = sentry::capture_error(&err);
+
+    if let Some(client) = sentry::Hub::current().client() {
+        client.flush(Some(std::time::Duration::from_secs(5)));
+    }
+
+    Ok(Json(serde_json::json!({
+        "marker": marker,
+        "message_event_id": info_id.to_string(),
+        "exception_event_id": exc_id.to_string(),
+        "dsn_present": std::env::var("SENTRY_DSN")
+            .map(|s| !s.is_empty())
+            .unwrap_or(false),
+    })))
 }
 
 /// Accept a raw JSON body and dispatch based on `kind`.

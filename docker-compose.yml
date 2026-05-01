@@ -11,6 +11,9 @@ services:
         condition: service_healthy
     environment:
       SENTRY_DSN: ${SENTRY_DSN}
+      # Tag local docker-compose runs as "local" so they don't pollute the
+      # production environment in Sentry.
+      SENTRY_ENV: ${SENTRY_ENV:-local}
       GIT_SHA: ${GIT_SHA:-dev}
     volumes:
       - ./.scheduler-live-state:/data/live-state
@@ -33,6 +36,7 @@ services:
       start_period: 30s
     environment:
       SENTRY_DSN: ${SENTRY_DSN}
+      SENTRY_ENV: ${SENTRY_ENV:-local}
       GIT_SHA: ${GIT_SHA:-dev}
     volumes:
       - ./.scheduler-live-state:/data/live-state

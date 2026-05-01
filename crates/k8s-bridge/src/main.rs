@@ -167,8 +167,36 @@ fn parse_cluster_specs(clusters: &[String]) -> Vec<binder::ClusterSpec> {
         .collect()
 }
 
+/// Initialise Sentry if `SENTRY_DSN` is set. The returned guard must outlive
+/// `main` — when dropped it flushes any in-flight events. Bind it to a named
+/// variable in `main` (not `_`) so its lifetime extends to process exit.
+///
+/// `sentry::init` registers a panic handler automatically, which is the main
+/// reason this exists: without it, the bridge crashes silently in production.
+fn init_sentry() -> Option<sentry::ClientInitGuard> {
+    let dsn = std::env::var("SENTRY_DSN").ok().filter(|s| !s.is_empty())?;
+    let guard = sentry::init((
+        dsn,
+        sentry::ClientOptions {
+            release: std::env::var("GIT_SHA").ok().map(Into::into),
+            environment: Some(
+                std::env::var("SENTRY_ENV")
+                    .unwrap_or_else(|_| "production".into())
+                    .into(),
+            ),
+            traces_sample_rate: 1.0,
+            ..Default::default()
+        },
+    ));
+    Some(guard)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Initialise Sentry first so its panic hook is in place before any other
+    // setup runs. The guard binds for the whole process lifetime.
+    let _sentry_guard = init_sentry();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),

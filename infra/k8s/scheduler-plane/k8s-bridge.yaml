@@ -48,6 +48,18 @@ spec:
               value: /etc/kubeconfig/config
             - name: RUST_LOG
               value: info
+            - name: SENTRY_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: sentry
+                  key: SENTRY_DSN
+                  optional: true
+            - name: SENTRY_ENV
+              value: production
+            - name: GIT_SHA
+              value: ${GIT_SHA}
+            - name: SENTRY_DEBUG
+              value: ${SENTRY_DEBUG}
           ports:
             - name: http
               containerPort: 8080
