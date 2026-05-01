@@ -21,7 +21,16 @@ export class GeneratorState {
     node_recovery_rate: "0.03",
     quota_weights: '{"training": 1, "research": 1, "inference": 1}',
     chip_weights: '{"H200": 1, "H100": 1, "A100": 1, "L40S": 0.7}',
-    chips_weights: '{"1": 0.2, "2": 0.25, "4": 0.3, "8": 1}',
+    chips_weights: JSON.stringify(
+      {
+        A100: { "1": 0.3, "2": 0.15, "4": 0.15, "8": 0.35, "16": 0.05 },
+        H100: { "1": 0.2, "2": 0.1, "4": 0.1, "8": 0.6 },
+        H200: { "1": 0.2, "2": 0.1, "4": 0.1, "8": 0.6 },
+        L40S: { "1": 0.75, "2": 0.1, "4": 0.1 },
+      },
+      null,
+      2,
+    ),
   });
 
   polling = false;

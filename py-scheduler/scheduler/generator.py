@@ -37,8 +37,19 @@ class GeneratorConfig:
     chip_weights: dict[str, float] = field(
         default_factory=lambda: {"A100": 1.0, "H100": 1.0, "H200": 1.0, "L40S": 0.7}
     )
-    chips_weights: dict[int, float] = field(
-        default_factory=lambda: {1: 0.2, 2: 0.25, 4: 0.3, 8: 1.0}
+    # Chips-per-replica is keyed by chip type because realistic workload mixes
+    # depend on the SKU. A single replica must fit on one node, so the keys
+    # for each chip type stay <= the per-node chip count of that pool. The
+    # weights track empirical cloud usage (see docs/notes): H100/H200 ship
+    # almost exclusively as 8-GPU HGX baseboards, A100 has a broad SKU range
+    # 1..16, L40S/L4 are PCIe single-card by default.
+    chips_weights: dict[str, dict[int, float]] = field(
+        default_factory=lambda: {
+            "A100": {1: 0.30, 2: 0.15, 4: 0.15, 8: 0.35, 16: 0.05},
+            "H100": {1: 0.20, 2: 0.10, 4: 0.10, 8: 0.60},
+            "H200": {1: 0.20, 2: 0.10, 4: 0.10, 8: 0.60},
+            "L40S": {1: 0.75, 2: 0.10, 4: 0.10},
+        }
     )
     priority_min: int = 30
     priority_max: int = 99
@@ -55,16 +66,26 @@ class GeneratorConfig:
 
     @classmethod
     def from_dict(cls, data: dict) -> GeneratorConfig:
-        """Build from a JSON-parsed dict, ignoring unknown keys."""
+        """Build from a JSON-parsed dict, ignoring unknown keys.
+
+        ``chips_weights`` survives a JSON round-trip with stringified int keys;
+        coerce them back so the rest of the code can index by ``int``.
+        """
         known = {f.name for f in cls.__dataclass_fields__.values()}
         if "chips_weights" in data and isinstance(data["chips_weights"], dict):
             data = dict(data)
-            data["chips_weights"] = {int(k): float(v) for k, v in data["chips_weights"].items()}
+            data["chips_weights"] = {
+                str(chip_type): {int(k): float(v) for k, v in inner.items()}
+                for chip_type, inner in data["chips_weights"].items()
+            }
         return cls(**{k: v for k, v in data.items() if k in known})
 
     def to_dict(self) -> dict:
         result = asdict(self)
-        result["chips_weights"] = {str(k): v for k, v in result["chips_weights"].items()}
+        result["chips_weights"] = {
+            chip_type: {str(k): v for k, v in inner.items()}
+            for chip_type, inner in result["chips_weights"].items()
+        }
         return result
 
 
@@ -101,9 +122,15 @@ def _make_job(rng: random.Random, cfg: GeneratorConfig) -> tuple[str, Pod, float
     runtime = round(rng.uniform(cfg.runtime_min, cfg.runtime_max), 2)
     replicas = rng.randint(cfg.replica_min, cfg.replica_max)
     job_id = _unique_id()
+    chip_type = _choose(rng, cfg.chip_weights)
+    # Chips-per-replica is per chip type so we never emit a replica that
+    # exceeds a node's chip count (e.g. 8 chips on an L40S 4-chip node).
+    # If a chip type is missing from the dict, fall back to single-chip —
+    # always feasible, easy to spot in the UI.
+    chip_dist = cfg.chips_weights.get(chip_type) or {1: 1.0}
     pod = Pod(
-        chips_per_replica=_choose(rng, cfg.chips_weights),
-        chip_type=_choose(rng, cfg.chip_weights),
+        chips_per_replica=_choose(rng, chip_dist),
+        chip_type=chip_type,
         priority=rng.randint(cfg.priority_min, cfg.priority_max),
         quota=_choose(rng, cfg.quota_weights),
         cluster=None,

@@ -95,6 +95,60 @@ def test_generate_cycle_deterministic():
     assert len(left_pods) == len(right_pods)
 
 
+def test_chips_per_replica_respects_chip_type():
+    """Each chip type's chips_per_replica must come from its own distribution
+    so a single replica never exceeds the per-node chip count of that pool."""
+    config = GeneratorConfig(
+        seed=1,
+        arrival_rate=200.0,
+        burst_factor=1.0,
+        chips_weights={
+            "A100": {16: 1.0},  # only 16-chip
+            "L40S": {1: 1.0},  # only 1-chip
+        },
+        chip_weights={"A100": 1.0, "L40S": 1.0},
+    )
+    pods: dict[str, Pod] = {}
+    generate_cycle(random.Random(1), config, pods, {}, {}, set(), ["node-a"], dt=1.0)
+    assert len(pods) > 50, "need a decent sample to exercise both chip types"
+    for pod in pods.values():
+        if pod.chip_type == "A100":
+            assert pod.chips_per_replica == 16
+        elif pod.chip_type == "L40S":
+            assert pod.chips_per_replica == 1
+        else:
+            raise AssertionError(f"unexpected chip type {pod.chip_type}")
+
+
+def test_chips_weights_missing_chip_type_falls_back_to_one():
+    """If a chip type has no chips_weights entry, default to single-chip
+    replicas — always feasible, easy to spot in the UI."""
+    config = GeneratorConfig(
+        seed=2,
+        arrival_rate=50.0,
+        burst_factor=1.0,
+        chips_weights={"A100": {8: 1.0}},  # no entry for H100
+        chip_weights={"H100": 1.0},  # only ever pick H100
+    )
+    pods: dict[str, Pod] = {}
+    generate_cycle(random.Random(2), config, pods, {}, {}, set(), ["node-a"], dt=1.0)
+    assert pods, "expected at least one job"
+    for pod in pods.values():
+        assert pod.chip_type == "H100"
+        assert pod.chips_per_replica == 1
+
+
+def test_generator_config_round_trips_through_json():
+    """Persisted configs come back through JSON, which stringifies all keys —
+    from_dict must restore the nested int keys so chips_weights stays usable."""
+    original = GeneratorConfig()
+    serialised = json.loads(json.dumps(original.to_dict()))
+    restored = GeneratorConfig.from_dict(serialised)
+    assert restored.chips_weights == original.chips_weights
+    # And spot-check: A100 16-chip option survived.
+    assert restored.chips_weights["A100"][16] == original.chips_weights["A100"][16]
+
+
 def test_read_config_from_disk():
     with TemporaryDirectory() as tmp:
         path = Path(tmp) / "config.json"

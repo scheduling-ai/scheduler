@@ -183,7 +183,7 @@
       </div>
       <div class="gen-field full">
         <label
-          title="JSON object mapping chips-per-replica counts to relative weights"
+          title="Nested JSON: chip type -> chips per replica -> relative weight. A replica must fit on one node, so the chips-per-replica keys stay <= the pool's chips/node (A100=16, H100/H200=8, L40S=4)."
           >Chips/replica weights</label
         ><textarea bind:value={gen.form.chips_weights} oninput={markDirty}
         ></textarea>
