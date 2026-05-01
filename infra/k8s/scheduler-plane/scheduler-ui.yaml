@@ -34,7 +34,7 @@ spec:
             - name: SENTRY_ENV
               value: production
             - name: GIT_SHA
-              value: ${GIT_SHA}
+              value: "${GIT_SHA}"
           ports:
             - name: http
               containerPort: 8000
