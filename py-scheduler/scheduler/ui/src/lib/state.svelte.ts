@@ -129,7 +129,13 @@ class SimState {
       timestamp: string | null;
       status: string;
     }[] = [];
-    let lastStatus = "absent";
+    // Compute the per-frame status, then emit one entry per change. We hold off
+    // on emitting until the first frame the job actually exists in — pre-existence
+    // "absent" entries are noise that point at snapshots before the workload was
+    // submitted. Once the job has appeared at least once, a later "absent" is
+    // meaningful (the job ended) and we surface it as "ended".
+    let lastStatus = "";
+    let everSeen = false;
     for (let i = 0; i < this.frames.length; i++) {
       const f = this.frames[i];
       const pod = f?.pods?.[jobName];
@@ -143,14 +149,17 @@ class SimState {
         else if (placed) status = "running";
         else status = "pending";
       }
-      if (i === 0 || status !== lastStatus) {
+      if (status !== "absent") everSeen = true;
+      if (!everSeen) continue;
+      const display = status === "absent" ? "ended" : status;
+      if (display !== lastStatus) {
         events.push({
           frame: i,
           seq: f?.seq ?? null,
           timestamp: f?.timestamp ?? null,
-          status,
+          status: display,
         });
-        lastStatus = status;
+        lastStatus = display;
       }
     }
     return events;
@@ -176,7 +185,12 @@ class SimState {
       running: number;
       total: number;
     }[] = [];
+    // Same pattern as jobHistory: skip frames before the deployment first appeared
+    // (those would render as "0/0 running", which reads like "still running 0 of 0"
+    // but actually means "not present in this snapshot"). The first non-zero state
+    // becomes the first event; subsequent zero states render as "ended".
     let lastKey = "";
+    let everSeen = false;
     for (let i = 0; i < this.frames.length; i++) {
       const f = this.frames[i];
       let running = 0;
@@ -198,8 +212,10 @@ class SimState {
           if (r.node) running++;
         }
       }
+      if (total > 0) everSeen = true;
+      if (!everSeen) continue;
       const key = `${running}/${total}`;
-      if (i === 0 || key !== lastKey) {
+      if (key !== lastKey) {
         events.push({
           frame: i,
           seq: f?.seq ?? null,

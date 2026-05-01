@@ -234,7 +234,11 @@
         {#each deployEvents as ev}
           <button class="sv-event" onclick={() => sim.requestFrame(ev.frame)}>
             <span class="sv-event-time">{eventTimeLabel(ev)}</span>
-            {ev.running}/{ev.total} running
+            {#if ev.total === 0}
+              ended
+            {:else}
+              {ev.running}/{ev.total} running
+            {/if}
           </button>
         {/each}
       </div>
