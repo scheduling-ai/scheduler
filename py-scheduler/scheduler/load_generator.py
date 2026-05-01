@@ -19,6 +19,7 @@ import logging
 import os
 import random
 import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -238,6 +239,30 @@ def make_handler(state: State) -> type[http.server.BaseHTTPRequestHandler]:
 
         def do_POST(self) -> None:
             path = self.path.split("?")[0]
+            if path == "/debug/sentry":
+                # Trigger an explicit Sentry capture from inside the deployed
+                # pod so we can verify the SDK is initialised, the DSN works,
+                # and outbound network reaches Sentry. Returns the event_id.
+                import sentry_sdk
+
+                marker = f"sentry-test-{os.environ.get('GIT_SHA', 'dev')}-{int(time.time())}"
+                msg_id = sentry_sdk.capture_message(
+                    f"load-generator sentry test ({marker})", level="info"
+                )
+                try:
+                    raise RuntimeError(f"intentional sentry test exception ({marker})")
+                except RuntimeError as exc:
+                    exc_id = sentry_sdk.capture_exception(exc)
+                sentry_sdk.flush(timeout=5)
+                self._reply(
+                    {
+                        "marker": marker,
+                        "message_event_id": msg_id,
+                        "exception_event_id": exc_id,
+                        "dsn_present": bool(os.environ.get("SENTRY_DSN")),
+                    }
+                )
+                return
             if path != "/config":
                 self._reply({"error": "not found"}, 404)
                 return
