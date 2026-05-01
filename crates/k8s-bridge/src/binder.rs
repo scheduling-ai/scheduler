@@ -1097,12 +1097,13 @@ fn build_cluster_state(
 /// nodes as free between placement and binding confirmation.
 /// Returns true if the Job is in a terminal state (Complete or Failed).
 ///
-/// Detection is conservative — we trust the Job controller's own signals:
-/// a `Complete`/`Failed` condition with status=True, or `completionTime` set.
-/// We deliberately do not infer terminality from `succeeded`/`failed` counts
-/// because a Job can transiently show `succeeded == completions` before the
-/// controller writes the condition, and we'd rather pick the Job up one
-/// extra cycle than skip an active one.
+/// Checks (in order): the Complete/Failed condition with status=True,
+/// `completionTime`, then the count-based fallbacks `succeeded >= completions`
+/// and `failed > backoffLimit`.  The fallbacks matter because the Job
+/// controller can lag for many seconds (sometimes indefinitely if pods are
+/// reaped before it observes them) before writing the condition or
+/// completionTime — without them, finished Jobs leak into the orphan-recovery
+/// branch and overwhelm the solver.
 fn is_job_finished(job: &K8sJob) -> bool {
     let Some(status) = job.status.as_ref() else {
         return false;
@@ -1116,6 +1117,17 @@ fn is_job_finished(job: &K8sJob) -> bool {
                 return true;
             }
         }
+    }
+    let spec = job.spec.as_ref();
+    let completions = spec.and_then(|s| s.completions).unwrap_or(1);
+    if status.succeeded.unwrap_or(0) >= completions {
+        return true;
+    }
+    // backoffLimit defaults to 6 in k8s.  A failure count strictly greater
+    // than the limit means the Job has exhausted retries and is terminal.
+    let backoff_limit = spec.and_then(|s| s.backoff_limit).unwrap_or(6);
+    if status.failed.unwrap_or(0) > backoff_limit {
+        return true;
     }
     false
 }
@@ -3091,6 +3103,54 @@ mod tests {
         assert!(
             !pods.contains_key("wl-fail"),
             "Failed Job must be filtered out"
+        );
+    }
+
+    /// The Job controller often lags writing `completionTime` and the Complete
+    /// condition: a Job can sit at `succeeded == completions` (or
+    /// `failed > backoffLimit`) for many seconds with neither field populated,
+    /// especially when pods are reaped before the controller observes them.
+    /// `is_job_finished` must catch those via the count-based fallback —
+    /// otherwise finished Jobs leak into the orphan-recovery branch.
+    #[test]
+    fn finished_via_count_fallback_is_filtered() {
+        let config = BinderConfig::default();
+
+        // Logically complete (succeeded == completions) but no completionTime
+        // and no conditions yet.
+        let mut succeeded = test_job("uid-s", false, 1, &config);
+        relabel(&mut succeeded, "k8s-s", "wl-s", &config);
+        succeeded.spec.as_mut().unwrap().completions = Some(1);
+        succeeded.status = Some(JobStatus {
+            succeeded: Some(1),
+            ..Default::default()
+        });
+
+        // Failures past backoffLimit.
+        let mut exhausted = test_job("uid-f", false, 1, &config);
+        relabel(&mut exhausted, "k8s-f", "wl-f", &config);
+        exhausted.spec.as_mut().unwrap().backoff_limit = Some(0);
+        exhausted.status = Some(JobStatus {
+            failed: Some(1),
+            ..Default::default()
+        });
+
+        let (_cl, pods) = build_cluster_state(
+            &empty_node_store(),
+            &make_pod_store(vec![]),
+            &make_job_store(vec![succeeded, exhausted]),
+            "cluster-a",
+            &config,
+            &mut HashMap::new(),
+        );
+
+        assert!(
+            !pods.contains_key("wl-s"),
+            "Job with succeeded >= completions must be filtered even without completionTime"
+        );
+        assert!(
+            !pods.contains_key("wl-f"),
+            "Job with failed > backoffLimit must be filtered even without completionTime"
         );
     }
 
