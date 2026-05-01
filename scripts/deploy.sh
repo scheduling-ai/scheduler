@@ -5,6 +5,11 @@
 # pushes a new tagged image to Artifact Registry, substitutes the tag into
 # the manifests, and rolls out the three Deployments.
 #
+# Each deploy also wipes managed Jobs in the data plane — this is a demo
+# cluster and we'd rather start clean than try to recover in-flight work
+# across bridge restarts. If you ever need cross-restart durability,
+# revisit this and add real recovery in the bridge.
+#
 # Prereqs (run once on a fresh machine):
 #   cd infra && ./setup.sh                        # creates the cluster + RBAC
 #   gcloud auth configure-docker europe-west4-docker.pkg.dev
@@ -45,6 +50,17 @@ docker push "${IMAGE}"
 # --------------------------------------------------------------- apply -----
 echo "==> Applying data-plane manifests (namespace + RBAC)"
 kubectl apply -f infra/k8s/data-plane/
+
+# Wipe managed Jobs from the data plane before the new bridge takes over.
+# This is a demo cluster — we treat each redeploy as a fresh start rather
+# than trying to recover in-flight workloads across restarts (the bridge's
+# pending_node_assignments map is in-memory and TTL-bounded, so anything
+# not freshly placed becomes an orphan that the next bridge can't easily
+# re-bind). Background cascade so we don't block on pod GC.
+echo "==> Resetting data-plane Jobs (managed-by=${MANAGED_BY:-custom-scheduler})"
+kubectl -n default delete jobs \
+  -l "scheduler.example.com/managed-by=${MANAGED_BY:-custom-scheduler}" \
+  --cascade=background --wait=false --ignore-not-found
 
 echo "==> Applying scheduler-plane manifests"
 for f in infra/k8s/scheduler-plane/*.yaml; do
