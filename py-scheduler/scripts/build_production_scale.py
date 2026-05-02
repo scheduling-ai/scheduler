@@ -79,12 +79,14 @@ CLUSTER_SHAPES: list[tuple[str, list[tuple[str, int]]]] = [
     ("train-fabric-2", [("H200", 375)]),
     ("train-fabric-3", [("H100", 250)]),
     # Inference regions (varied sizes; H100/A100/L40S — no H200 here).
-    ("inf-region-1", [("H100", 150)]),
-    ("inf-region-2", [("H100", 125)]),
-    ("inf-region-3", [("A100", 100)]),
-    ("inf-region-4", [("A100", 75)]),
-    ("inf-region-5", [("L40S", 75)]),
-    ("inf-region-6", [("L40S", 50)]),
+    # Sized so the fleet's overall inference oversubscription is ~2× rather
+    # than the contrived ~7× a tighter fixture would produce.
+    ("inf-region-1", [("H100", 450)]),
+    ("inf-region-2", [("H100", 375)]),
+    ("inf-region-3", [("A100", 300)]),
+    ("inf-region-4", [("A100", 225)]),
+    ("inf-region-5", [("L40S", 225)]),
+    ("inf-region-6", [("L40S", 150)]),
 ]
 
 TRAINING_FABRICS = ["train-fabric-1", "train-fabric-2", "train-fabric-3"]
@@ -147,17 +149,17 @@ QUOTA_GUARANTEES: list[tuple[str, list[tuple[str, str, int]]]] = [
     (
         "serving",
         [
-            ("inf-region-1", "H100", 800),
-            ("inf-region-2", "H100", 600),
-            ("inf-region-3", "A100", 400),
-            ("inf-region-4", "A100", 300),
+            ("inf-region-1", "H100", 2400),
+            ("inf-region-2", "H100", 1800),
+            ("inf-region-3", "A100", 1200),
+            ("inf-region-4", "A100", 900),
         ],
     ),
     (
         "serving-batch",
         [
-            ("inf-region-5", "L40S", 400),
-            ("inf-region-6", "L40S", 300),
+            ("inf-region-5", "L40S", 1200),
+            ("inf-region-6", "L40S", 800),
         ],
     ),
     (
@@ -558,9 +560,9 @@ def add_posttraining(state: State) -> list[str]:
     #   slug, w_chip, w_fabric, w_reps, e_chip, e_fabric, e_reps, priority
     #   e_fabric=None means no eval sidecar (single-pod posttraining).
     specs = [
-        # rlhf — incident-response and important runs (higher priority).
-        ("rlhf-2026-04-22", "H200", "train-fabric-1", 32, "H100", "train-fabric-3", 1, 68),
-        ("rlhf-2026-04-25", "H200", "train-fabric-2", 24, "H100", "train-fabric-3", 1, 67),
+        # rlhf — flagship-policy runs (higher priority).
+        ("rlhf-stability-r3", "H200", "train-fabric-1", 32, "H100", "train-fabric-3", 1, 68),
+        ("rlhf-stability-r4", "H200", "train-fabric-2", 24, "H100", "train-fabric-3", 1, 67),
         ("rlhf-harmless-r2", "H100", "train-fabric-3", 24, None, None, 0, 67),
         ("rlhf-tools-r5", "H200", "train-fabric-2", 12, "H100", "train-fabric-3", 1, 63),
         # dpo — preference / tone tuning, mostly mid-priority.
@@ -773,6 +775,80 @@ def add_infra(state: State) -> list[str]:
         )
         names.append(name)
     return names
+
+
+def add_paused_pretraining(state: State) -> None:
+    """Older pretraining runs that are currently paused (suspended).
+
+    Real fleets carry historical pretraining runs in suspended state for
+    a while: capacity has been reclaimed for the current quarter's runs,
+    but the previous run's checkpoint is preserved so it can be resumed
+    if the team decides to revisit it.
+
+    Cluster binding is preserved (suspended pretraining stays pinned to
+    its original fabric per project-state.md).  Must be called after
+    :func:`initial_placement` so these stay suspended.
+    """
+    paused = [
+        PodRec(
+            name="pretrain-base-2025q4-workers",
+            chips_per_replica=CHIPS_PER_NODE,
+            chip_type="H200",
+            priority=PRIORITY["pretraining"],
+            quota="pretraining",
+            cluster_hint="train-fabric-1",
+            statuses=[Replica(phase="suspended") for _ in range(48)],
+        ),
+        PodRec(
+            name="pretrain-mid-2025q4-shard",
+            chips_per_replica=CHIPS_PER_NODE,
+            chip_type="H200",
+            priority=PRIORITY["pretraining"] - 5,
+            quota="pretraining",
+            cluster_hint="train-fabric-2",
+            statuses=[Replica(phase="suspended") for _ in range(16)],
+        ),
+    ]
+    for pod in paused:
+        state.add_pod(pod)
+
+
+# Counter for the inference burst — starts where the steady-state
+# serve-flagship-inf-region-1 deployment leaves off so names don't
+# collide.
+INFERENCE_BURST_BASE = 5501  # one past INFERENCE_PROFILE["inf-region-1"]["flagship"]
+INFERENCE_BURST_COUNT = 1500
+
+
+def add_inference_burst(state: State) -> list[str]:
+    """Autoscaler scale-up: more serve-flagship replicas than the region
+    can fit, simulating a traffic spike.  Returns the names so they can
+    be removed later when the spike subsides.
+    """
+    chip = "H100"  # inf-region-1 is single-chip-type
+    pri = PRIORITY["inference_serving"]
+    names: list[str] = []
+    for i in range(INFERENCE_BURST_BASE, INFERENCE_BURST_BASE + INFERENCE_BURST_COUNT):
+        name = f"serve-flagship-inf-region-1-{i:04d}"
+        state.add_pod(
+            PodRec(
+                name=name,
+                chips_per_replica=1,
+                chip_type=chip,
+                priority=pri,
+                quota="serving",
+                cluster_hint="inf-region-1",
+                statuses=[Replica()],
+            )
+        )
+        names.append(name)
+    return names
+
+
+def remove_inference_burst(state: State, names: list[str]) -> None:
+    """Autoscaler scale-down: spike subsides, replicas drop out."""
+    for name in names:
+        state.pods.pop(name, None)
 
 
 def add_queued_workloads(state: State) -> None:
@@ -1033,9 +1109,10 @@ def main() -> None:
     add_inference(state)
 
     initial_placement(state)
-    # Add ambient queue depth.  Must come *after* placement so these pods
-    # stay queued throughout the trace.
+    # Ambient queue depth and historical paused state — must come *after*
+    # placement so these pods stay in their target phase throughout the trace.
     add_queued_workloads(state)
+    add_paused_pretraining(state)
 
     frames: list[dict] = []
 
@@ -1056,13 +1133,19 @@ def main() -> None:
     state.replace_failed(affected)
     frames.append(state.snapshot(seq=3, ts=START + 2 * FRAME_INTERVAL, reason="recovery"))
 
+    # Inference autoscaler spike — independent of the training narrative.
+    # Becomes visible from frame 4 onwards and subsides before frame 8.
+    burst_names = add_inference_burst(state)
+
     # Frame 3: a new posttraining job arrives queued (256 GPU rlhf on
-    # fabric-1, H200).
+    # fabric-1, H200).  Continues the rlhf-stability series at r5 — the
+    # priority bump represents an incident-response expedite, not a
+    # special name suffix.
     arrival = PodRec(
-        name="posttrain-rlhf-2026-05-01-incident",
+        name="posttrain-rlhf-stability-r5",
         chips_per_replica=CHIPS_PER_NODE,
         chip_type="H200",
-        priority=PRIORITY["posttraining"] + 5,  # slightly elevated to force admit
+        priority=PRIORITY["posttraining"] + 5,  # elevated for incident response
         quota="posttraining",
         cluster_hint="train-fabric-1",
         statuses=[Replica() for _ in range(32)],  # 256 H200
@@ -1101,9 +1184,11 @@ def main() -> None:
         state.snapshot(seq=7, ts=START + 6 * FRAME_INTERVAL, reason="completion_and_resume")
     )
 
-    # Frame 7: rack repaired; arrival pruned; steady state restored.
+    # Frame 7: rack repaired; arrival pruned; inference spike subsides;
+    # steady state restored.
     state.repair_nodes(rack_nodes)
     state.pods.pop(arrival.name, None)
+    remove_inference_burst(state, burst_names)
     frames.append(state.snapshot(seq=8, ts=START + 7 * FRAME_INTERVAL, reason="steady_state"))
 
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
