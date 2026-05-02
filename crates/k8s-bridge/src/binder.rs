@@ -427,7 +427,10 @@ pub async fn run(
             continue;
         }
         if was_unhealthy {
-            info!(tick_gap_ms, "reflectors recovered, resuming scheduling cycles");
+            info!(
+                tick_gap_ms,
+                "reflectors recovered, resuming scheduling cycles"
+            );
             was_unhealthy = false;
         }
 
@@ -671,7 +674,11 @@ pub async fn run(
                     }
                 }
             }
-            Err(e) => warn!(seq, cycle_ms = cycle_start.elapsed().as_millis() as u64, "solver call failed: {e}"),
+            Err(e) => warn!(
+                seq,
+                cycle_ms = cycle_start.elapsed().as_millis() as u64,
+                "solver call failed: {e}"
+            ),
         }
     }
 }
