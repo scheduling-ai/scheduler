@@ -393,8 +393,15 @@ pub async fn run(
     const PENDING_TTL: Duration = Duration::from_secs(30);
     let mut pending_node_assignments: PendingNodeMap = HashMap::new();
     let mut seq: u64 = 0;
+    let mut last_tick_at: Option<std::time::Instant> = None;
+    let mut was_unhealthy = false;
     loop {
         interval.tick().await;
+        let cycle_start = std::time::Instant::now();
+        let tick_gap_ms = last_tick_at
+            .map(|t| t.elapsed().as_millis() as u64)
+            .unwrap_or(0);
+        last_tick_at = Some(cycle_start);
 
         // Expire pending entries whose pods never appeared (e.g. job was
         // deleted externally between placement and reflector confirmation).
@@ -413,9 +420,15 @@ pub async fn run(
         if !unhealthy.is_empty() {
             warn!(
                 clusters = ?unhealthy,
+                tick_gap_ms,
                 "reflectors unhealthy, skipping scheduling cycle"
             );
+            was_unhealthy = true;
             continue;
+        }
+        if was_unhealthy {
+            info!(tick_gap_ms, "reflectors recovered, resuming scheduling cycles");
+            was_unhealthy = false;
         }
 
         // Collect workload names currently on clusters (from reflectors).
@@ -491,6 +504,12 @@ pub async fn run(
                 let frame = snapshot::build_frame(seq, &config.solver_name, &request, "empty", 0);
                 *snap.lock().await = Some(frame);
             }
+            info!(
+                seq,
+                tick_gap_ms,
+                cycle_ms = cycle_start.elapsed().as_millis() as u64,
+                "idle cycle (no work)"
+            );
             continue;
         }
 
@@ -527,6 +546,8 @@ pub async fn run(
         };
         info!(
             seq,
+            tick_gap_ms,
+            store_workloads = store_snapshot.len(),
             pods = request_pods,
             gangs = request_gangs,
             clusters = request_clusters,
@@ -575,11 +596,16 @@ pub async fn run(
                 };
                 let (suspend_count, unsuspend_count, assign_count) =
                     (diff.suspend.len(), diff.unsuspend.len(), diff.assign.len());
+                let apply_started = std::time::Instant::now();
                 apply_assignments_multi(&diff, &ctx).await;
+                let apply_ms = apply_started.elapsed().as_millis() as u64;
                 info!(
+                    seq,
                     assigned = assign_count,
                     suspended = suspend_count,
                     unsuspended = unsuspend_count,
+                    apply_ms,
+                    cycle_ms = cycle_start.elapsed().as_millis() as u64,
                     "apply cycle complete"
                 );
 
@@ -645,7 +671,7 @@ pub async fn run(
                     }
                 }
             }
-            Err(e) => warn!("solver call failed: {e}"),
+            Err(e) => warn!(seq, cycle_ms = cycle_start.elapsed().as_millis() as u64, "solver call failed: {e}"),
         }
     }
 }

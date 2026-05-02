@@ -464,6 +464,31 @@ def k8s_clients(kind_clusters):
 
 
 SCHEDULER_LOG_DIR = Path(os.environ.get("E2E_LOG_DIR", "/tmp/scheduler-e2e-logs"))
+PYTEST_EVENTS_PATH = SCHEDULER_LOG_DIR / "pytest-events.log"
+
+
+def _emit_pytest_event(phase: str, name: str, extra: str = "") -> None:
+    """Append a UTC-timestamped line to pytest-events.log so we can align
+    test boundaries with the scheduler's tracing log when investigating
+    flakes.  Errors are intentionally swallowed — this is diagnostic-only.
+    """
+    try:
+        SCHEDULER_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        with PYTEST_EVENTS_PATH.open("a") as f:
+            f.write(f"{ts} {phase} {name}{(' ' + extra) if extra else ''}\n")
+    except Exception:
+        pass
+
+
+def pytest_runtest_logstart(nodeid: str, location: object) -> None:
+    _emit_pytest_event("START", nodeid)
+
+
+def pytest_runtest_logreport(report: "pytest.TestReport") -> None:
+    if report.when == "call":
+        extra = f"duration={report.duration:.2f}s"
+        _emit_pytest_event(f"END[{report.outcome}]", report.nodeid, extra)
 
 
 @pytest.fixture(scope="session")
