@@ -1,0 +1,99 @@
+# Postgres for the scheduler's workload store, run in-cluster as a single-
+# replica StatefulSet.
+#
+# This is a cost choice for the demo cluster — Cloud SQL (the managed
+# equivalent on GCP) is ~$50–100/month at the smallest dedicated SKU,
+# whereas this pod uses ~50m CPU and 256 MiB on the existing system pool.
+# A real production deployment should use a managed database (Cloud SQL,
+# RDS, AlloyDB, etc.) for backups, point-in-time recovery, version
+# upgrades, and HA failover — none of which are handled here.  The Rust
+# code reads `DATABASE_URL`, so the swap is a Terraform change plus a
+# Secret update; nothing in the bridge changes.
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-credentials
+  namespace: scheduler-system
+type: Opaque
+stringData:
+  POSTGRES_USER: scheduler
+  POSTGRES_PASSWORD: scheduler
+  POSTGRES_DB: scheduler
+  # Same data, formatted for sqlx as a connection string. Lives here so
+  # the bridge Deployment can reference a single key.
+  DATABASE_URL: postgres://scheduler:scheduler@postgres.scheduler-system.svc.cluster.local:5432/scheduler
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: scheduler-system
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+  # Headless: StatefulSet pods are addressed via DNS, but for a single-replica
+  # set this is also fine as a regular ClusterIP.
+  clusterIP: None
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: scheduler-system
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      # Same anti-toleration as the bridge: this is the scheduler plane,
+      # not a chip pool.
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          envFrom:
+            - secretRef:
+                name: postgres-credentials
+          ports:
+            - containerPort: 5432
+              name: postgres
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+              # Postgres on Alpine wants its data subdirectory under
+              # PGDATA, not the mount root, otherwise it complains about
+              # the mountpoint "lost+found" entry on some volume types.
+              subPath: pgdata
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "scheduler", "-d", "scheduler"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "scheduler", "-d", "scheduler"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "256Mi"
+            limits:
+              memory: "512Mi"
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi

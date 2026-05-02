@@ -114,7 +114,9 @@ def test_pod_resubmit_during_suspension(scheduler, k8s_clients):
     )
 
 
-def test_scheduler_restart_with_existing_cluster_objects(rust_binary, kind_clusters, k8s_clients):
+def test_scheduler_restart_with_existing_cluster_objects(
+    rust_binary, kind_clusters, k8s_clients, postgres_url
+):
     """Scheduler restarts after placing jobs. Must not crash or duplicate."""
     port = find_free_port()
     restart_tmp = Path(tempfile.mkdtemp(prefix="scheduler-restart-"))
@@ -144,7 +146,7 @@ def test_scheduler_restart_with_existing_cluster_objects(rust_binary, kind_clust
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            env=SOLVER_ENV,
+            env={**SOLVER_ENV, "DATABASE_URL": postgres_url},
         )
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:

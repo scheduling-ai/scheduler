@@ -76,6 +76,7 @@ for f in infra/k8s/scheduler-plane/*.yaml; do
 done
 
 echo "==> Waiting for rollouts"
+kubectl -n scheduler-system rollout status statefulset/postgres --timeout=3m
 kubectl -n scheduler-system rollout status deploy/k8s-bridge --timeout=3m
 kubectl -n scheduler-system rollout status deploy/load-generator --timeout=3m
 kubectl -n scheduler-system rollout status deploy/scheduler-ui --timeout=3m

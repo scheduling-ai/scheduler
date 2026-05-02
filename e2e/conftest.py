@@ -492,7 +492,33 @@ def pytest_runtest_logreport(report: "pytest.TestReport") -> None:
 
 
 @pytest.fixture(scope="session")
-def scheduler(rust_binary, kind_clusters):
+def postgres_url():
+    """Spin up a Postgres container for the e2e session.
+
+    The bridge requires `DATABASE_URL` for `serve`; tests get a clean,
+    isolated Postgres via testcontainers.  An external Postgres can be
+    used instead by setting `E2E_DATABASE_URL` — useful for fast iteration
+    when you've already got one running locally.
+    """
+    external = os.environ.get("E2E_DATABASE_URL")
+    if external:
+        yield external
+        return
+
+    from testcontainers.postgres import PostgresContainer
+
+    with PostgresContainer("postgres:16-alpine") as pg:
+        url = pg.get_connection_url()
+        # testcontainers returns a SQLAlchemy-style URL
+        # (postgresql+psycopg2://...); strip the driver suffix for sqlx.
+        if "+" in url.split("://", 1)[0]:
+            scheme, _, rest = url.partition("://")
+            url = scheme.split("+", 1)[0] + "://" + rest
+        yield url
+
+
+@pytest.fixture(scope="session")
+def scheduler(rust_binary, kind_clusters, postgres_url):
     """Start a single scheduler process for the entire session. Kill on teardown.
 
     Stdout+stderr are merged into ``$E2E_LOG_DIR/scheduler.log`` so CI can
@@ -506,6 +532,8 @@ def scheduler(rust_binary, kind_clusters):
     SCHEDULER_LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = SCHEDULER_LOG_DIR / "scheduler.log"
     log_file = log_path.open("wb")
+
+    env = {**SOLVER_ENV, "DATABASE_URL": postgres_url}
 
     proc = subprocess.Popen(
         [
@@ -530,7 +558,7 @@ def scheduler(rust_binary, kind_clusters):
         ],
         stdout=log_file,
         stderr=subprocess.STDOUT,
-        env=SOLVER_ENV,
+        env=env,
     )
 
     base_url = f"http://localhost:{port}"

@@ -3,6 +3,7 @@ mod binder;
 mod job_store;
 
 mod observer;
+mod persistence;
 mod snapshot;
 mod solver;
 mod solver_types;
@@ -116,6 +117,12 @@ enum Command {
         /// Python solver to use (e.g. "heuristic").
         #[arg(long, default_value = "heuristic")]
         solver: String,
+        /// Postgres connection string for the durable workload store.
+        /// Falls back to the `DATABASE_URL` env var.  Required: there is no
+        /// in-memory fallback for `serve` because that would silently
+        /// disable persistence in production.
+        #[arg(long, env = "DATABASE_URL")]
+        database_url: String,
     },
     /// Observe cluster events in real time.
     Observe {
@@ -247,6 +254,7 @@ async fn main() -> anyhow::Result<()> {
             quotas,
             record,
             solver,
+            database_url,
         } => {
             let cluster_specs = parse_cluster_specs(&clusters);
             let loaded_quotas = load_quotas(quotas.as_deref())?;
@@ -262,7 +270,8 @@ async fn main() -> anyhow::Result<()> {
                 ..binder::BinderConfig::default()
             };
 
-            let store = job_store::new_store();
+            let pg_store = persistence::PgStore::connect(&database_url).await?;
+            let store = job_store::WorkloadStore::new(std::sync::Arc::new(pg_store)).await?;
             let scheduler_state = job_store::new_scheduler_state();
             let snapshot_state = snapshot::new_snapshot_state();
 

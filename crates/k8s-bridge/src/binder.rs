@@ -467,16 +467,16 @@ pub async fn run(
             .any(|name| !current_cluster_workloads.contains(name))
             && let Some(ref s) = store
         {
-            let mut guard = s.lock().await;
-            for wl in guard.values_mut() {
-                wl.consecutive_failures = 0;
+            if let Err(e) = s.reset_all_failures().await {
+                warn!("failed to reset backoff counters: {e}");
+            } else {
+                info!("cluster capacity changed, reset backoff counters");
             }
-            info!("cluster capacity changed, reset backoff counters");
         }
         prev_cluster_workloads = current_cluster_workloads;
 
         let store_snapshot: HashMap<String, Workload> = match &store {
-            Some(s) => s.lock().await.clone(),
+            Some(s) => s.snapshot().await,
             None => HashMap::new(),
         };
 
@@ -658,18 +658,20 @@ pub async fn run(
                 // Update backoff counters for store workloads: increment
                 // for those still queued, reset for those that were placed.
                 if let Some(ref s) = store {
-                    let mut guard = s.lock().await;
                     for name in &diff.queue_order {
-                        if let Some(wl) = guard.get_mut(name) {
-                            wl.consecutive_failures = wl.consecutive_failures.saturating_add(1);
+                        if let Some(wl) = s.get(name).await {
+                            let next = wl.consecutive_failures.saturating_add(1);
+                            if let Err(e) = s.set_failures(name, next).await {
+                                warn!(workload = %name, "failed to bump backoff: {e}");
+                            }
                         }
                     }
                     // Reset counters for placed/unsuspended workloads (they
                     // succeeded — if they re-enter the store later they
                     // start fresh).
                     for name in diff.assign.keys().chain(diff.unsuspend.keys()) {
-                        if let Some(wl) = guard.get_mut(name) {
-                            wl.consecutive_failures = 0;
+                        if let Err(e) = s.set_failures(name, 0).await {
+                            warn!(workload = %name, "failed to reset backoff: {e}");
                         }
                     }
                 }
@@ -1549,22 +1551,22 @@ async fn remove_if_generation_matches(
     name: &str,
     snapshot: &HashMap<String, Workload>,
 ) {
+    use crate::job_store::RemoveOutcome;
     let expected_gen = match snapshot.get(name) {
         Some(wl) => wl.generation,
         None => return,
     };
-    let mut s = store.lock().await;
-    if let Some(current) = s.get(name) {
-        if current.generation == expected_gen {
-            s.remove(name);
-        } else {
+    match store.remove_if_generation_matches(name, expected_gen).await {
+        Ok(RemoveOutcome::Removed) | Ok(RemoveOutcome::NotPresent) => {}
+        Ok(RemoveOutcome::GenerationMismatch { actual }) => {
             warn!(
                 workload = name,
                 expected = expected_gen,
-                actual = current.generation,
+                actual,
                 "generation mismatch, skipping store removal"
             );
         }
+        Err(e) => warn!(workload = name, "persistence remove failed: {e}"),
     }
 }
 
@@ -1690,15 +1692,19 @@ async fn apply_suspension(
                     // Increment generation so stale placement results from the
                     // pre-suspension cycle are rejected by generation checks.
                     if let Some(s) = &store {
-                        s.lock().await.insert(
-                            wl_name_owned.clone(),
-                            Workload {
-                                managed: ManagedObject::Pod(Box::new(original_pod)),
-                                state: WorkloadState::Suspended(cluster_owned),
-                                generation: prev_generation.wrapping_add(1),
-                                consecutive_failures: 0,
-                            },
-                        );
+                        let workload = Workload {
+                            managed: ManagedObject::Pod(Box::new(original_pod)),
+                            state: WorkloadState::Suspended(cluster_owned.clone()),
+                            generation: prev_generation.wrapping_add(1),
+                            consecutive_failures: 0,
+                        };
+                        if let Err(e) = s.upsert(wl_name_owned.clone(), workload).await {
+                            warn!(
+                                workload = %wl_name_owned,
+                                cluster = cluster_owned,
+                                "failed to persist suspended pod: {e}"
+                            );
+                        }
                     }
                 }
                 Err(e) => warn!(
@@ -1767,9 +1773,17 @@ async fn apply_unsuspension(
                         "unsuspended pod {wl_name_owned} on {node_name}"
                     );
                     if let Some(s) = &store {
-                        let mut guard = s.lock().await;
-                        if guard.get(&wl_name_owned).map(|w| w.generation) == Some(expected_gen) {
-                            guard.remove(&wl_name_owned);
+                        use crate::job_store::RemoveOutcome;
+                        match s
+                            .remove_if_generation_matches(&wl_name_owned, expected_gen)
+                            .await
+                        {
+                            Ok(RemoveOutcome::Removed) | Ok(RemoveOutcome::NotPresent) => {}
+                            Ok(RemoveOutcome::GenerationMismatch { .. }) => {}
+                            Err(e) => warn!(
+                                workload = %wl_name_owned,
+                                "persistence remove failed: {e}"
+                            ),
                         }
                     }
                 }

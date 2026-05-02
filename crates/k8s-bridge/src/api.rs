@@ -148,27 +148,29 @@ async fn submit_job(
         ));
     }
 
-    let mut s = state.store.lock().await;
-    if s.contains_key(&name) {
-        return Err((
+    let workload = Workload {
+        managed: ManagedObject::Job(Box::new(job)),
+        state: WorkloadState::Queued,
+        generation: 0,
+        consecutive_failures: 0,
+    };
+    match state.store.insert_new(name.clone(), workload).await {
+        Ok(true) => {
+            info!(workload = %name, kind = "Job", "workload submitted");
+            Ok((
+                StatusCode::CREATED,
+                Json(serde_json::json!({"name": name, "kind": "Job", "status": "queued"})),
+            ))
+        }
+        Ok(false) => Err((
             StatusCode::CONFLICT,
             format!("workload '{name}' already exists"),
-        ));
+        )),
+        Err(e) => Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("persistence error: {e}"),
+        )),
     }
-    info!(workload = %name, kind = "Job", "workload submitted");
-    s.insert(
-        name.clone(),
-        Workload {
-            managed: ManagedObject::Job(Box::new(job)),
-            state: WorkloadState::Queued,
-            generation: 0,
-            consecutive_failures: 0,
-        },
-    );
-    Ok((
-        StatusCode::CREATED,
-        Json(serde_json::json!({"name": name, "kind": "Job", "status": "queued"})),
-    ))
 }
 
 async fn submit_pod(
@@ -182,40 +184,40 @@ async fn submit_pod(
         )
     })?;
 
-    let mut s = state.store.lock().await;
-    if s.contains_key(&name) {
-        return Err((
+    let workload = Workload {
+        managed: ManagedObject::Pod(Box::new(pod)),
+        state: WorkloadState::Queued,
+        generation: 0,
+        consecutive_failures: 0,
+    };
+    match state.store.insert_new(name.clone(), workload).await {
+        Ok(true) => {
+            info!(workload = %name, kind = "Pod", "workload submitted");
+            Ok((
+                StatusCode::CREATED,
+                Json(serde_json::json!({"name": name, "kind": "Pod", "status": "queued"})),
+            ))
+        }
+        Ok(false) => Err((
             StatusCode::CONFLICT,
             format!("workload '{name}' already exists"),
-        ));
+        )),
+        Err(e) => Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("persistence error: {e}"),
+        )),
     }
-    info!(workload = %name, kind = "Pod", "workload submitted");
-    s.insert(
-        name.clone(),
-        Workload {
-            managed: ManagedObject::Pod(Box::new(pod)),
-            state: WorkloadState::Queued,
-            generation: 0,
-            consecutive_failures: 0,
-        },
-    );
-    Ok((
-        StatusCode::CREATED,
-        Json(serde_json::json!({"name": name, "kind": "Pod", "status": "queued"})),
-    ))
 }
 
 async fn list_workloads(State(state): State<AppState>) -> Json<Vec<String>> {
-    let s = state.store.lock().await;
-    Json(s.keys().cloned().collect())
+    Json(state.store.keys().await)
 }
 
 async fn get_workload(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let s = state.store.lock().await;
-    let workload = s.get(&name).ok_or(StatusCode::NOT_FOUND)?;
+    let workload = state.store.get(&name).await.ok_or(StatusCode::NOT_FOUND)?;
     let value = match &workload.managed {
         ManagedObject::Job(job) => serde_json::to_value(job.as_ref()).unwrap_or_default(),
         ManagedObject::Pod(pod) => serde_json::to_value(pod.as_ref()).unwrap_or_default(),
@@ -223,13 +225,20 @@ async fn get_workload(
     Ok(Json(value))
 }
 
-async fn delete_workload(State(state): State<AppState>, Path(name): Path<String>) -> StatusCode {
-    let mut s = state.store.lock().await;
-    if s.remove(&name).is_some() {
-        info!(workload = %name, "workload deleted");
-        StatusCode::NO_CONTENT
-    } else {
-        StatusCode::NOT_FOUND
+async fn delete_workload(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    match state.store.remove(&name).await {
+        Ok(true) => {
+            info!(workload = %name, "workload deleted");
+            Ok(StatusCode::NO_CONTENT)
+        }
+        Ok(false) => Ok(StatusCode::NOT_FOUND),
+        Err(e) => Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("persistence error: {e}"),
+        )),
     }
 }
 
