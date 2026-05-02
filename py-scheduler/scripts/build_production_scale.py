@@ -1,14 +1,14 @@
 """Generate scheduler/scenarios/production_scale.jsonl.
 
-A canned multi-frame trace at the scale described in
-docs/private/scaling_requirements.md.  The fixture is illustrative — cluster
-sizes, quotas, and workload mix are example values for a research-leaning lab
-fleet at this order of magnitude, not measurements of any specific
-organisation.
+A canned multi-frame trace for a production-scale example fleet managing
+tens of thousands of GPUs, as described in
+docs/private/scaling_requirements.md.  The fixture is illustrative —
+cluster sizes, quotas, and workload mix are example values, not
+measurements of any specific organisation.
 
 Topology:
-- 3 training fabrics (mega + mid + tertiary), dense H200/H100.
-- 6 inference regions, mix of H100/A100/L40S, sized for latency-to-users.
+- A small number of training fabrics (dense H200/H100).
+- Several inference regions (H100/A100/L40S) sized for latency-to-users.
 
 Workloads:
 - Pretraining: 1–2 active jobs, the largest may span two fabrics as a
@@ -74,20 +74,18 @@ CHIPS_PER_NODE = 8
 #
 # (cluster_name, list of (chip_type, node_count))
 CLUSTER_SHAPES: list[tuple[str, list[tuple[str, int]]]] = [
-    # Training fabrics
-    ("train-fabric-1", [("H200", 500)]),  # 4000 H200 — primary mega
-    ("train-fabric-2", [("H200", 375)]),  # 3000 H200 — secondary
-    ("train-fabric-3", [("H100", 250)]),  # 2000 H100 — older generation
-    # Inference regions (6, varied sizes; H100/A100/L40S only — no H200 here)
-    ("inf-region-1", [("H100", 150)]),  # 1200 H100
-    ("inf-region-2", [("H100", 125)]),  # 1000 H100
-    ("inf-region-3", [("A100", 100)]),  #  800 A100
-    ("inf-region-4", [("A100", 75)]),  #  600 A100
-    ("inf-region-5", [("L40S", 75)]),  #  600 L40S
-    ("inf-region-6", [("L40S", 50)]),  #  400 L40S
+    # Training fabrics (dense H200/H100, where pretraining/posttraining run).
+    ("train-fabric-1", [("H200", 500)]),
+    ("train-fabric-2", [("H200", 375)]),
+    ("train-fabric-3", [("H100", 250)]),
+    # Inference regions (varied sizes; H100/A100/L40S — no H200 here).
+    ("inf-region-1", [("H100", 150)]),
+    ("inf-region-2", [("H100", 125)]),
+    ("inf-region-3", [("A100", 100)]),
+    ("inf-region-4", [("A100", 75)]),
+    ("inf-region-5", [("L40S", 75)]),
+    ("inf-region-6", [("L40S", 50)]),
 ]
-# Total: 13_600 GPUs, mostly on training fabrics.
-# Doc envelope is "order of 20k"; this is on that order.
 
 TRAINING_FABRICS = ["train-fabric-1", "train-fabric-2", "train-fabric-3"]
 INFERENCE_REGIONS = [
