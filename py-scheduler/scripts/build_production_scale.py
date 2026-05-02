@@ -485,14 +485,18 @@ def assert_quota_invariant() -> None:
 
 
 def add_pretraining(state: State) -> tuple[list[str], list[str]]:
-    """Two pretraining jobs.  The first is the largest single job in the
-    fixture (1024 H200) on train-fabric-1.  The second is a cross-fabric
-    workers+workers gang split across fabric-1 and fabric-2.
+    """Two pretraining jobs:
+
+    - *Job A* — single-fabric on train-fabric-1, with a small cross-fabric
+      eval sidecar on train-fabric-3 (workers+eval gang).
+    - *Job B* — cross-fabric workers+workers gang, used because the
+      parallelism group exceeds a single fabric.
     """
     pri = PRIORITY["pretraining"]
 
-    # Job A: large single-fabric pretrain on fabric-1.  Sized to occupy most
-    # of the fabric so the arrival in frame 4 forces real preemption.
+    # Job A: large single-fabric pretrain.  Sized to occupy most of fabric-1
+    # so the arrival in frame 4 forces real preemption.  Has a small eval
+    # sidecar on fabric-3 (cheaper H100) — co-launched as a gang.
     a_workers = PodRec(
         name="pretrain-base-2026q2-workers",
         chips_per_replica=CHIPS_PER_NODE,
@@ -502,11 +506,21 @@ def add_pretraining(state: State) -> tuple[list[str], list[str]]:
         cluster_hint="train-fabric-1",
         statuses=[Replica() for _ in range(320)],  # 320 nodes × 8 = 2560 H200
     )
+    a_eval = PodRec(
+        name="pretrain-base-2026q2-eval",
+        chips_per_replica=CHIPS_PER_NODE,
+        chip_type="H100",
+        priority=pri,
+        quota="pretraining",
+        cluster_hint="train-fabric-3",
+        statuses=[Replica() for _ in range(2)],  # 2 nodes × 8 = 16 H100
+    )
     state.add_pod(a_workers)
+    state.add_pod(a_eval)
+    state.add_gang([a_workers.name, a_eval.name])
 
-    # Job B: cross-fabric pretrain (workers split across fabric-1 + fabric-2).
-    # This is the *exception* — only used when one fabric can't fit the
-    # parallelism group.  Both shards are at the same priority and quota.
+    # Job B: cross-fabric workers+workers gang — one parallelism group
+    # split across fabric-1 + fabric-2 because no single fabric fits it.
     b_shard_a = PodRec(
         name="pretrain-mid-2026q2-shard-a",
         chips_per_replica=CHIPS_PER_NODE,
@@ -529,46 +543,91 @@ def add_pretraining(state: State) -> tuple[list[str], list[str]]:
     state.add_pod(b_shard_b)
     state.add_gang([b_shard_a.name, b_shard_b.name])
 
-    return [a_workers.name], [b_shard_a.name, b_shard_b.name]
+    return [a_workers.name, a_eval.name], [b_shard_a.name, b_shard_b.name]
 
 
 def add_posttraining(state: State) -> list[str]:
-    """About 12 posttraining jobs across rlhf/dpo/sft/distill, intra-cluster.
+    """About 12 posttraining jobs across rlhf/dpo/sft/distill.
 
-    Sizes vary 64–512 GPUs.  Each is a single Pod (no gang) — the posttraining
-    pipelines here are framed as one parallel training group per job.
+    Most are single-pod (intra-cluster).  Several have a small
+    cross-fabric eval sidecar — a workers+eval gang.  Priorities are
+    deterministic per job so the demo's preemption order is predictable.
     """
-    pri = PRIORITY["posttraining"]
+    # Deterministic priorities keep the suspension order stable across runs.
+    # Lower numbers go first under preemption.
+    #
+    # Spec fields:
+    #   slug, w_chip, w_fabric, w_reps, e_chip, e_fabric, e_reps, priority
+    #   e_fabric=None means no eval sidecar (single-pod posttraining).
     specs = [
-        # (slug, chip_type, fabric, replicas)
-        ("rlhf-2026-04-22", "H200", "train-fabric-1", 32),  # 256 GPU
-        ("rlhf-2026-04-25", "H200", "train-fabric-2", 24),  # 192 GPU
-        ("dpo-r3", "H200", "train-fabric-1", 16),  # 128 GPU
-        ("dpo-r4-helpful", "H200", "train-fabric-2", 16),  # 128 GPU
-        ("sft-tools-r7", "H100", "train-fabric-3", 32),  # 256 GPU
-        ("sft-tools-r8", "H100", "train-fabric-3", 16),  # 128 GPU
-        ("distill-mini-r4", "H200", "train-fabric-1", 12),  # 96 GPU
-        ("distill-mini-r5", "H200", "train-fabric-2", 8),  # 64 GPU
-        ("rlhf-harmless-r2", "H100", "train-fabric-3", 24),  # 192 GPU
-        ("dpo-tone-r1", "H200", "train-fabric-1", 8),  # 64 GPU
-        ("sft-cookbook-r2", "H100", "train-fabric-3", 12),  # 96 GPU
-        ("rlhf-tools-r5", "H200", "train-fabric-2", 12),  # 96 GPU
+        # rlhf — incident-response and important runs (higher priority).
+        ("rlhf-2026-04-22", "H200", "train-fabric-1", 32, "H100", "train-fabric-3", 1, 68),
+        ("rlhf-2026-04-25", "H200", "train-fabric-2", 24, "H100", "train-fabric-3", 1, 67),
+        ("rlhf-harmless-r2", "H100", "train-fabric-3", 24, None, None, 0, 67),
+        ("rlhf-tools-r5", "H200", "train-fabric-2", 12, "H100", "train-fabric-3", 1, 63),
+        # dpo — preference / tone tuning, mostly mid-priority.
+        ("dpo-r3", "H200", "train-fabric-1", 16, "H100", "train-fabric-3", 1, 64),
+        ("dpo-r4-helpful", "H200", "train-fabric-2", 16, None, None, 0, 65),
+        ("dpo-tone-r1", "H200", "train-fabric-1", 8, None, None, 0, 60),
+        # sft — instruction / cookbook tuning.
+        ("sft-tools-r7", "H100", "train-fabric-3", 32, None, None, 0, 66),
+        ("sft-tools-r8", "H100", "train-fabric-3", 16, None, None, 0, 64),
+        ("sft-cookbook-r2", "H100", "train-fabric-3", 12, None, None, 0, 63),
+        # distill — small student-model training, lowest-priority within
+        # posttraining.  r4 (gang on fabric-1 + fabric-3) is intentionally
+        # below dpo-tone-r1 so that frame-4 preemption demonstrates gang
+        # suspension: when the gang is touched, the eval sidecar on
+        # fabric-3 is suspended atomically with the workers on fabric-1.
+        ("distill-mini-r4", "H200", "train-fabric-1", 12, "H100", "train-fabric-3", 1, 58),
+        ("distill-mini-r5", "H200", "train-fabric-2", 8, None, None, 0, 58),
     ]
     names: list[str] = []
-    for slug, chip, fabric, reps in specs:
-        name = f"posttrain-{slug}"
-        state.add_pod(
-            PodRec(
-                name=name,
-                chips_per_replica=CHIPS_PER_NODE,
-                chip_type=chip,
-                priority=pri + state.rng.randint(-3, 3),
-                quota="posttraining",
-                cluster_hint=fabric,
-                statuses=[Replica() for _ in range(reps)],
+    for slug, w_chip, w_fab, w_reps, e_chip, e_fab, e_reps, prio in specs:
+        if e_fab is None:
+            # Single-pod posttraining (no eval sidecar in the gang).
+            name = f"posttrain-{slug}"
+            state.add_pod(
+                PodRec(
+                    name=name,
+                    chips_per_replica=CHIPS_PER_NODE,
+                    chip_type=w_chip,
+                    priority=prio,
+                    quota="posttraining",
+                    cluster_hint=w_fab,
+                    statuses=[Replica() for _ in range(w_reps)],
+                )
             )
-        )
-        names.append(name)
+            names.append(name)
+        else:
+            # Workers + eval cross-cluster gang.  Both pods share priority
+            # and quota (model.py invariant).
+            workers_name = f"posttrain-{slug}-workers"
+            eval_name = f"posttrain-{slug}-eval"
+            state.add_pod(
+                PodRec(
+                    name=workers_name,
+                    chips_per_replica=CHIPS_PER_NODE,
+                    chip_type=w_chip,
+                    priority=prio,
+                    quota="posttraining",
+                    cluster_hint=w_fab,
+                    statuses=[Replica() for _ in range(w_reps)],
+                )
+            )
+            assert e_chip is not None
+            state.add_pod(
+                PodRec(
+                    name=eval_name,
+                    chips_per_replica=CHIPS_PER_NODE,
+                    chip_type=e_chip,
+                    priority=prio,
+                    quota="posttraining",
+                    cluster_hint=e_fab,
+                    statuses=[Replica() for _ in range(e_reps)],
+                )
+            )
+            state.add_gang([workers_name, eval_name])
+            names.append(workers_name)
     return names
 
 
@@ -773,17 +832,31 @@ def count_full_free_nodes(state: State, fabric: str, chip_type: str) -> int:
 PREEMPTIBLE_QUOTAS = ("research", "interp", "partners", "safety-evals", "posttraining")
 
 
+def gang_of(state: State, pod_name: str) -> list[str]:
+    """Return the gang containing ``pod_name``, or ``[pod_name]`` if not
+    in any gang.  Gangs are atomic for preemption: suspending any member
+    suspends all of them.
+    """
+    for gang in state.gang_sets:
+        if pod_name in gang:
+            return list(gang)
+    return [pod_name]
+
+
 def reclaim_for_full_nodes(
     state: State, want_full_nodes: int, fabric: str, chip_type: str
 ) -> list[str]:
     """Suspend lowest-priority eligible pods on (fabric, chip_type) until at
-    least ``want_full_nodes`` fully-empty nodes are available.  Suspends
-    pods one at a time in priority order, recomputing fully-empty count
-    each step so we don't over-preempt.
+    least ``want_full_nodes`` fully-empty nodes are available.  Picks
+    victims one at a time by priority, recomputing fully-empty count each
+    step so we don't over-preempt.  If a victim belongs to a gang, the
+    whole gang is suspended atomically — including members on other
+    fabrics (gangs are admission-atomic).
 
-    Returns the names of suspended pods, in suspension order.
+    Returns suspended pod names in suspension order.
     """
     suspended: list[str] = []
+    suspended_set: set[str] = set()
     while count_full_free_nodes(state, fabric, chip_type) < want_full_nodes:
         candidates = [
             p
@@ -792,13 +865,20 @@ def reclaim_for_full_nodes(
             and p.chip_type == chip_type
             and p.quota in PREEMPTIBLE_QUOTAS
             and any(r.node is not None for r in p.statuses)
+            and p.name not in suspended_set
         ]
         if not candidates:
             break
         candidates.sort(key=lambda p: (p.priority, p.name))
-        victim = candidates[0]
-        state.unplace_pod(victim, "suspended")
-        suspended.append(victim.name)
+        victim_name = candidates[0].name
+        for member in gang_of(state, victim_name):
+            pod = state.pods.get(member)
+            if pod is None or member in suspended_set:
+                continue
+            if any(r.node is not None for r in pod.statuses):
+                state.unplace_pod(pod, "suspended")
+            suspended.append(member)
+            suspended_set.add(member)
     return suspended
 
 
