@@ -742,6 +742,129 @@ def add_partners(state: State) -> list[str]:
     return names
 
 
+def add_infra(state: State) -> list[str]:
+    """Small ``infra`` quota workloads — CI / build / dev pods on fabric-3.
+
+    Real fleets have a handful of internal infra workloads always running
+    on the GPU partition: containerised CI runners that need a GPU,
+    long-lived dev sandboxes for platform engineers, smoke-tests for new
+    chip drivers.  All small, all on cheap H100s.
+    """
+    pri = PRIORITY["infra"]
+    names: list[str] = []
+    specs = [
+        # (slug, chips_per_replica, replicas)
+        ("ci-gpu-runner", 1, 6),
+        ("driver-smoke", 1, 2),
+        ("dev-sandbox-r2", CHIPS_PER_NODE, 1),
+    ]
+    for slug, cpr, reps in specs:
+        name = f"infra-{slug}"
+        state.add_pod(
+            PodRec(
+                name=name,
+                chips_per_replica=cpr,
+                chip_type="H100",
+                priority=pri,
+                quota="infra",
+                cluster_hint="train-fabric-3",
+                statuses=[Replica() for _ in range(reps)],
+            )
+        )
+        names.append(name)
+    return names
+
+
+def add_queued_workloads(state: State) -> None:
+    """Pods that are pending at every frame.
+
+    Real production fleets always have non-trivial queue depth across
+    several quotas — autoscaler lag, submission churn, capacity
+    contention, gang admission waits.  This function adds workloads that
+    are deliberately *not* placed: they sit in the queue across the whole
+    trace, mirroring that ambient queue depth.
+
+    All target chip types where the trace's training fabrics are tight
+    (mostly H200); creating queue depth on the H100 fabric (which has
+    slack) would look unjustified to a reader who knows the math.
+
+    Must be called after :func:`initial_placement` so these pods are not
+    iterated by the placement loop.
+    """
+    queued = [
+        # Posttraining waiting for fabric-1 / fabric-2 H200 slots.
+        PodRec(
+            name="posttrain-rlhf-arena-r3",
+            chips_per_replica=CHIPS_PER_NODE,
+            chip_type="H200",
+            priority=PRIORITY["posttraining"] - 2,
+            quota="posttraining",
+            cluster_hint="train-fabric-1",
+            statuses=[Replica() for _ in range(8)],
+        ),
+        PodRec(
+            name="posttrain-dpo-helpful-r2",
+            chips_per_replica=CHIPS_PER_NODE,
+            chip_type="H200",
+            priority=PRIORITY["posttraining"],
+            quota="posttraining",
+            cluster_hint="train-fabric-2",
+            statuses=[Replica() for _ in range(4)],
+        ),
+        # Eval suite for an H200-targeted model — waits for an H200 slot.
+        PodRec(
+            name="eval-toolcalls-r03",
+            chips_per_replica=CHIPS_PER_NODE,
+            chip_type="H200",
+            priority=PRIORITY["safety_evals"],
+            quota="safety-evals",
+            cluster_hint="train-fabric-1",
+            statuses=[Replica() for _ in range(2)],
+        ),
+        # Partner pretraining-eval batch waiting on fabric-2.
+        PodRec(
+            name="partner-003-pretrain-eval",
+            chips_per_replica=CHIPS_PER_NODE,
+            chip_type="H200",
+            priority=PRIORITY["partners"],
+            quota="partners",
+            cluster_hint="train-fabric-2",
+            statuses=[Replica() for _ in range(2)],
+        ),
+        # Research long-tail: a couple of larger experiments queued for H200.
+        PodRec(
+            name="exp-user07-attn-circuit-r094",
+            chips_per_replica=CHIPS_PER_NODE,
+            chip_type="H200",
+            priority=PRIORITY["research_high"],
+            quota="research",
+            cluster_hint="train-fabric-1",
+            statuses=[Replica() for _ in range(2)],
+        ),
+        PodRec(
+            name="exp-user02-mup-test-r095",
+            chips_per_replica=CHIPS_PER_NODE,
+            chip_type="H200",
+            priority=PRIORITY["research_low"],
+            quota="research",
+            cluster_hint="train-fabric-2",
+            statuses=[Replica() for _ in range(4)],
+        ),
+        # Interp run that needs flagship-class chips.
+        PodRec(
+            name="exp-user14-feature-dict-r096",
+            chips_per_replica=CHIPS_PER_NODE,
+            chip_type="H200",
+            priority=PRIORITY["research_low"],
+            quota="interp",
+            cluster_hint="train-fabric-1",
+            statuses=[Replica()],
+        ),
+    ]
+    for pod in queued:
+        state.add_pod(pod)
+
+
 def add_oncall_hot_spare(state: State) -> list[str]:
     """A tiny standing reserve so oncall always has a hot spare."""
     pri = PRIORITY["oncall"]
@@ -906,9 +1029,13 @@ def main() -> None:
     add_evals(state)
     research_names = add_research_long_tail(state)
     add_partners(state)
+    add_infra(state)
     add_inference(state)
 
     initial_placement(state)
+    # Add ambient queue depth.  Must come *after* placement so these pods
+    # stay queued throughout the trace.
+    add_queued_workloads(state)
 
     frames: list[dict] = []
 
@@ -950,20 +1077,26 @@ def main() -> None:
     # pretraining and oncall.  In practice this pulls in research first,
     # then the lowest-priority posttraining pods if research alone isn't
     # enough.
-    suspended_research = reclaim_for_full_nodes(state, 32, "train-fabric-1", "H200")
+    suspended_in_frame4 = reclaim_for_full_nodes(state, 32, "train-fabric-1", "H200")
     state.place_pod(arrival)
     frames.append(state.snapshot(seq=5, ts=START + 4 * FRAME_INTERVAL, reason="reclaim_and_admit"))
 
     # Frame 5: stable while the arrival runs.
     frames.append(state.snapshot(seq=6, ts=START + 5 * FRAME_INTERVAL, reason="running"))
 
-    # Frame 6: arrival completes; suspended research resumes.
+    # Frame 6: arrival completes; suspended pods resume.
+    #
+    # Restoration is per-pod (place_pod called for each name).  This is safe
+    # in this trace because the arrival's 32 nodes free up exactly the
+    # capacity that was reclaimed in frame 4 — so every member, including
+    # the cross-cluster eval sidecar, finds room again.  A real solver
+    # would handle gang-aware restoration explicitly.
     for r in arrival.statuses:
         if r.node:
             state.release(r.node, arrival.chips_per_replica)
         r.node = None
         r.phase = "completed"
-    restore_pods(state, suspended_research)
+    restore_pods(state, suspended_in_frame4)
     frames.append(
         state.snapshot(seq=7, ts=START + 6 * FRAME_INTERVAL, reason="completion_and_resume")
     )
