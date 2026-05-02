@@ -84,8 +84,11 @@ spec:
             initialDelaySeconds: 30
             periodSeconds: 30
           resources:
+            # Tiny CPU request to fit on the 2-vCPU system pool, which is
+            # already crowded by GKE system pods.  Postgres at idle uses
+            # ~1m; load is bounded by the bridge's tiny write rate.
             requests:
-              cpu: "50m"
+              cpu: "10m"
               memory: "256Mi"
             limits:
               memory: "512Mi"
