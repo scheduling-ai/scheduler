@@ -463,12 +463,24 @@ def k8s_clients(kind_clusters):
     return clients
 
 
+SCHEDULER_LOG_DIR = Path(os.environ.get("E2E_LOG_DIR", "/tmp/scheduler-e2e-logs"))
+
+
 @pytest.fixture(scope="session")
 def scheduler(rust_binary, kind_clusters):
-    """Start a single scheduler process for the entire session. Kill on teardown."""
+    """Start a single scheduler process for the entire session. Kill on teardown.
+
+    Stdout+stderr are merged into ``$E2E_LOG_DIR/scheduler.log`` so CI can
+    upload it as a build artifact for post-mortem flake investigation.
+    Default ``/tmp/scheduler-e2e-logs/``.
+    """
     port = find_free_port()
     sched_tmp = Path(tempfile.mkdtemp(prefix="scheduler-"))
     record_path = sched_tmp / "session.jsonl"
+
+    SCHEDULER_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = SCHEDULER_LOG_DIR / "scheduler.log"
+    log_file = log_path.open("wb")
 
     proc = subprocess.Popen(
         [
@@ -491,8 +503,8 @@ def scheduler(rust_binary, kind_clusters):
             "--solver",
             "milp",
         ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
         env=SOLVER_ENV,
     )
 
@@ -507,7 +519,8 @@ def scheduler(rust_binary, kind_clusters):
             time.sleep(0.5)
     else:
         proc.kill()
-        raise TimeoutError("Scheduler did not start within 30s")
+        log_file.close()
+        raise TimeoutError(f"Scheduler did not start within 30s; see {log_path}")
 
     yield Scheduler(proc=proc, base_url=base_url, record_path=record_path)
 
@@ -516,6 +529,7 @@ def scheduler(rust_binary, kind_clusters):
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
         proc.kill()
+    log_file.close()
     shutil.rmtree(sched_tmp, ignore_errors=True)
 
 

@@ -144,6 +144,10 @@ jobs:
           name: Run e2e tests
           command: uv run pytest e2e/ -v -m e2e --tb=short
           no_output_timeout: 15m
+      - store_artifacts:
+          path: /tmp/scheduler-e2e-logs
+          destination: scheduler-e2e-logs
+          when: always
 
 workflows:
   presubmit-and-test:

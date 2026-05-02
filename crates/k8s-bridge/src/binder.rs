@@ -511,11 +511,29 @@ pub async fn run(
             &mut pending_node_assignments,
         );
 
+        let request_pods = request.pods.len();
+        let request_gangs = request.gang_sets.len();
+        let request_clusters = request.clusters.len();
+
         seq += 1;
         let solve_started = std::time::Instant::now();
         let solve_outcome =
             solver::call_solver(&request, record_path.as_deref(), &config.solver_name).await;
         let duration_ms = solve_started.elapsed().as_millis() as u64;
+
+        let solve_status: &str = match &solve_outcome {
+            Ok(r) => r.solver_status.as_str(),
+            Err(_) => "error",
+        };
+        info!(
+            seq,
+            pods = request_pods,
+            gangs = request_gangs,
+            clusters = request_clusters,
+            solve_ms = duration_ms,
+            status = solve_status,
+            "solver call complete"
+        );
 
         if let Some(ref snap) = snapshot_state {
             let solver_status = match &solve_outcome {
