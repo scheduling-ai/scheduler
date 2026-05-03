@@ -61,11 +61,16 @@ class DepSpec:
 # Two Deployments with out-of-phase sine waves.  Replica counts kept low
 # because the demo cluster's chip pools are small (e2-micro, a few chips
 # each); over-provisioning would just produce a queue that never drains.
+# Priorities pitched against the Job-side generator's range (30–99 by
+# default).  serve-flagship sits high enough to consistently land;
+# serve-batch sits in the middle so it wins against low-priority Jobs
+# but loses to bursty high-priority work — making preemption visible
+# in the UI without rigging the demo.
 DEPLOYMENTS: list[DepSpec] = [
     DepSpec(
         name="serve-flagship",
         quota="inference",
-        priority=40,
+        priority=80,
         chip_type="H100",
         chips_per_replica=1,
         min_replicas=0,
@@ -76,7 +81,7 @@ DEPLOYMENTS: list[DepSpec] = [
     DepSpec(
         name="serve-batch",
         quota="inference",
-        priority=20,
+        priority=50,
         chip_type="A100",
         chips_per_replica=1,
         min_replicas=0,
