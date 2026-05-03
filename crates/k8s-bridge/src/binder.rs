@@ -1931,13 +1931,12 @@ async fn bind_pending_pods(
             continue;
         };
         let pod_reader = rt.pod_reader();
+        let job_reader = rt.job_reader();
 
         // Collect Pending, unbound pods that we manage.  Owner kind doesn't
         // matter here — Job-spawned pods, ReplicaSet-spawned pods (KEDA /
         // Deployment path), and bare managed Pods all need the same Binding
-        // API call to land them on the solver's chosen node.  The original
-        // version of this filter was Job-only, which silently dropped
-        // Deployment-spawned Pods on the floor.
+        // API call to land them on the solver's chosen node.
         let mut unbound: Vec<Arc<Pod>> = pod_reader
             .state()
             .into_iter()
@@ -1964,18 +1963,51 @@ async fn bind_pending_pods(
             continue;
         }
 
-        // Group by logical workload name from the pod's `job-name` label.
-        // Both the load-generator's Job templates and the
-        // deployment-driver's Deployment templates set this label, so it
-        // works for both spawn paths without having to look up the parent
-        // controller.
+        // Group by logical workload name.
+        //
+        // Preferred path: read the pod's `job-name` label.  Both the
+        // load-generator's Job templates and the deployment-driver's
+        // Deployment templates set this label.
+        //
+        // Fallback for Job-spawned pods: when the pod template doesn't
+        // carry `job-name` (the bridge only auto-injects `managed-by`,
+        // and tests / hand-rolled submissions may omit `job-name` on the
+        // pod template), look up the parent Job and read its label.
         let mut by_workload: HashMap<String, Vec<Arc<Pod>>> = HashMap::new();
         for pod in unbound.drain(..) {
-            let wl_name = pod
-                .labels()
-                .get(&config.job_name_label)
-                .cloned()
-                .unwrap_or_else(|| pod.name_any());
+            let from_pod_label = pod.labels().get(&config.job_name_label).cloned();
+            let wl_name = match from_pod_label {
+                Some(name) => name,
+                None => {
+                    let job_uid = pod
+                        .metadata
+                        .owner_references
+                        .as_ref()
+                        .and_then(|refs| refs.iter().find(|r| r.kind == "Job"))
+                        .map(|r| r.uid.as_str())
+                        .unwrap_or("");
+                    if job_uid.is_empty() {
+                        // Not Job-owned and no label — use pod name as
+                        // last resort; pending_node_assignments lookup
+                        // will likely miss but we tried.
+                        pod.name_any()
+                    } else {
+                        let parent = job_reader
+                            .state()
+                            .iter()
+                            .find(|j| j.metadata.uid.as_deref() == Some(job_uid))
+                            .cloned();
+                        match parent {
+                            Some(job) => job
+                                .labels()
+                                .get(&config.job_name_label)
+                                .cloned()
+                                .unwrap_or_else(|| job.name_any()),
+                            None => pod.name_any(),
+                        }
+                    }
+                }
+            };
             by_workload.entry(wl_name).or_default().push(pod);
         }
 
