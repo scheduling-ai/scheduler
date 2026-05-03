@@ -752,6 +752,15 @@ fn build_solver_request_multi(
         let (chips, chip_type, priority, quota, parallelism) =
             extract_workload_metadata(&workload.managed, config);
 
+        if !is_known_quota(config, &quota) {
+            warn!(
+                workload = %wl_name,
+                quota = %quota,
+                "skipping store workload with unknown quota"
+            );
+            continue;
+        }
+
         // Store-side workloads are always queued (suspended workloads stay
         // on their cluster and reach the solver via reflector state).
         let statuses_by_replica: Vec<SolverReplicaStatus> = (0..parallelism)
@@ -794,6 +803,13 @@ fn extract_workload_metadata(
         ManagedObject::Job(job) => extract_job_metadata(job, config),
         ManagedObject::Pod(pod) => extract_pod_metadata(pod, config),
     }
+}
+
+/// Whether `quota` is one of the names the bridge was started with.
+/// Empty quota list = passthrough (no validation), matching the API
+/// path's behaviour.
+fn is_known_quota(config: &BinderConfig, quota: &str) -> bool {
+    config.quotas.is_empty() || config.quotas.iter().any(|q| q.name == quota)
 }
 
 /// Extract scheduling metadata from a k8s Job manifest.
@@ -925,6 +941,16 @@ fn build_cluster_state(
 
         let (chips, chip_type, priority, quota, parallelism) = extract_job_metadata(&job, config);
 
+        if !is_known_quota(config, &quota) {
+            warn!(
+                workload = %job_name,
+                quota = %quota,
+                "skipping reflector-discovered Job with unknown quota"
+            );
+            pending_nodes.remove(&job_name);
+            continue;
+        }
+
         let is_suspended = job.spec.as_ref().and_then(|s| s.suspend).unwrap_or(false);
 
         // Three placement states for an active Job's pods, in priority order:
@@ -1040,6 +1066,15 @@ fn build_cluster_state(
         }
 
         let (chips, chip_type, priority, quota, _) = extract_pod_metadata(&pod, config);
+
+        if !is_known_quota(config, &quota) {
+            warn!(
+                workload = %pod_name,
+                quota = %quota,
+                "skipping reflector-discovered Pod with unknown quota"
+            );
+            continue;
+        }
 
         let phase = pod
             .status

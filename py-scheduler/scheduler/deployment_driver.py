@@ -64,7 +64,7 @@ class DepSpec:
 DEPLOYMENTS: list[DepSpec] = [
     DepSpec(
         name="serve-flagship",
-        quota="serving",
+        quota="inference",
         priority=40,
         chip_type="H100",
         chips_per_replica=1,
@@ -75,7 +75,7 @@ DEPLOYMENTS: list[DepSpec] = [
     ),
     DepSpec(
         name="serve-batch",
-        quota="serving",
+        quota="inference",
         priority=20,
         chip_type="A100",
         chips_per_replica=1,
