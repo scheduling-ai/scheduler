@@ -1090,6 +1090,19 @@ fn build_cluster_state(
         // Running or Pending both map to Running (unplaced replica).
         let solver_phase = Phase::Running;
 
+        // Cluster pinning: only set `cluster` once the Pod has actually
+        // landed on a node.  A Pending Pod (Deployment-spawned, not yet
+        // bound) needs the solver's admission step to consider it — and
+        // both the heuristic and MILP solvers gate admission on
+        // `pod.cluster is None`, so leaving cluster=Some on a Pending
+        // Pod silently drops it from placement.
+        //
+        // v0 assumption: this is safe because the bridge currently runs
+        // against one cluster.  Multi-cluster needs a real cluster-pinned
+        // pending category in the solver — the Pod can only be bound
+        // back to the cluster it lives on, regardless of solver choice.
+        let cluster = node_name.as_ref().map(|_| cluster_name.to_string());
+
         solver_pods.insert(
             pod_name,
             SolverPod {
@@ -1097,14 +1110,10 @@ fn build_cluster_state(
                 chip_type,
                 priority,
                 quota,
-                cluster: Some(cluster_name.to_string()),
+                cluster,
                 statuses_by_replica: vec![SolverReplicaStatus {
                     phase: solver_phase,
-                    node: if solver_phase == Phase::Running {
-                        node_name
-                    } else {
-                        None
-                    },
+                    node: node_name,
                 }],
             },
         );
