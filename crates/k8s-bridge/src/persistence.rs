@@ -127,7 +127,7 @@ mod tests {
     //!   DATABASE_URL=postgres://scheduler:scheduler@localhost:5432/scheduler \
     //!     cargo test -p k8s-bridge --bin k8s-bridge -- --ignored
     use super::*;
-    use crate::job_store::{ManagedObject, Persistence, Workload, WorkloadState};
+    use crate::job_store::{ManagedObject, Persistence, Workload};
     use k8s_openapi::api::batch::v1::Job;
 
     fn workload(name: &str) -> Workload {
@@ -140,7 +140,6 @@ mod tests {
         };
         Workload {
             managed: ManagedObject::Job(Box::new(job)),
-            state: WorkloadState::Queued,
             generation: 0,
             consecutive_failures: 0,
         }

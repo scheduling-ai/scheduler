@@ -43,26 +43,20 @@ pub enum ManagedObject {
     Pod(Box<Pod>),
 }
 
-/// Lifecycle state of a workload in the store.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum WorkloadState {
-    /// Not yet placed on any cluster. Solver has full cluster freedom.
-    Queued,
-    /// Was running, now suspended. Pinned to this cluster.
-    ///
-    /// Jobs stay on the cluster as suspended k8s objects and are tracked via
-    /// reflectors — they do NOT re-enter the store in this state.
-    /// Pods are deleted from the cluster on suspension (following Kueue's
-    /// approach) and re-enter the store in this state so the binder can
-    /// recreate them on unsuspension.
-    Suspended(String),
-}
-
-/// A workload: a Kubernetes manifest + its scheduling lifecycle state.
+/// A workload: a Kubernetes manifest + scheduler bookkeeping.
+///
+/// The store only ever holds workloads that are *queued* — submitted via
+/// the API and waiting for placement.  Once a workload is placed on a
+/// cluster, the row is removed and the cluster's API server (read via
+/// reflector) becomes the source of truth.
+///
+/// Suspension is owner-driven: Jobs are suspended via `spec.suspend=true`
+/// (the Job stays on the cluster), and Pods spawned by Deployments are
+/// preempted by deletion (the Deployment controller respawns).  Neither
+/// path re-enters the store, so we don't need a `Suspended` state here.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workload {
     pub managed: ManagedObject,
-    pub state: WorkloadState,
     /// Monotonically increasing generation counter. Incremented on every
     /// mutation (state change, resubmission). The binder snapshots this
     /// value before calling the solver and checks it before removing the
@@ -206,16 +200,6 @@ impl WorkloadStore {
         Ok(true)
     }
 
-    /// Insert or replace (used by re-entry on Pod suspension, where the
-    /// caller has already constructed the new Workload state with an
-    /// incremented generation).
-    pub async fn upsert(&self, name: String, workload: Workload) -> Result<()> {
-        let mut guard = self.inner.lock().await;
-        self.persistence.upsert(&name, &workload).await?;
-        guard.insert(name, workload);
-        Ok(())
-    }
-
     /// Remove unconditionally.  Returns `true` if a row was removed.
     pub async fn remove(&self, name: &str) -> Result<bool> {
         let mut guard = self.inner.lock().await;
@@ -316,7 +300,6 @@ mod tests {
         };
         Workload {
             managed: ManagedObject::Job(Box::new(job)),
-            state: WorkloadState::Queued,
             generation: 0,
             consecutive_failures: 0,
         }
@@ -391,8 +374,8 @@ mod tests {
         let wl = job("x");
         let s = serde_json::to_string(&wl).unwrap();
         let back: Workload = serde_json::from_str(&s).unwrap();
-        assert!(matches!(back.state, WorkloadState::Queued));
         assert!(matches!(back.managed, ManagedObject::Job(_)));
+        assert_eq!(back.generation, 0);
     }
 }
 

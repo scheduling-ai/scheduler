@@ -224,7 +224,65 @@ def submit_job(sched: Scheduler, manifest: dict) -> requests.Response:
 
 
 def submit_pod(sched: Scheduler, manifest: dict) -> requests.Response:
+    """Submit a bare Pod via the HTTP API.
+
+    Bridge rejects these in v0 — only useful for testing that rejection.
+    """
     return requests.post(f"{sched.base_url}/jobs", json=manifest, timeout=5)
+
+
+def create_pod_on_cluster(
+    k8s_clients: dict,
+    cluster: str,
+    name: str,
+    chip_type: str,
+    priority: int,
+    quota: str,
+    chips: int,
+) -> None:
+    """Create a managed Pod directly on a k8s cluster, bypassing the bridge API.
+
+    This is how KEDA / a Deployment / a ReplicaSet would create Pods at the
+    cluster level: with the right labels and annotations so the bridge's
+    reflector picks them up.  The resulting Pod has no ownerReferences
+    (real KEDA Pods would, via their Deployment), but the bridge's
+    discovery path doesn't care — it filters on managed-by labels.
+    """
+    pod = client.V1Pod(
+        metadata=client.V1ObjectMeta(
+            name=name,
+            namespace="default",
+            labels={
+                "accelerator": chip_type,
+                JOB_NAME_LABEL: name,
+                MANAGED_BY_LABEL: MANAGED_BY_VALUE,
+            },
+            annotations={
+                "scheduler.example.com/priority": str(priority),
+                "scheduler.example.com/quota": quota,
+            },
+        ),
+        spec=client.V1PodSpec(
+            tolerations=[
+                client.V1Toleration(
+                    key="scheduler", operator="Equal", value="custom", effect="NoSchedule"
+                )
+            ],
+            containers=[
+                client.V1Container(
+                    name="test",
+                    image="busybox:1.36",
+                    command=["sleep", "3600"],
+                    resources=client.V1ResourceRequirements(
+                        requests={CHIP_RESOURCE: str(chips)},
+                        limits={CHIP_RESOURCE: str(chips)},
+                    ),
+                )
+            ],
+            restart_policy="Never",
+        ),
+    )
+    k8s_clients[cluster]["core"].create_namespaced_pod("default", pod)
 
 
 def list_workloads(sched: Scheduler) -> list[str]:

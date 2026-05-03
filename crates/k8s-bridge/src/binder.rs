@@ -46,8 +46,7 @@ use kube::{
 use tracing::{info, warn};
 
 use crate::job_store::{
-    self, ManagedObject, SchedulerState, SchedulerStateInner, Workload, WorkloadState,
-    WorkloadStore,
+    self, ManagedObject, SchedulerState, SchedulerStateInner, Workload, WorkloadStore,
 };
 
 use crate::snapshot::{self, SnapshotState};
@@ -744,48 +743,26 @@ fn build_solver_request_multi(
         let (chips, chip_type, priority, quota, parallelism) =
             extract_workload_metadata(&workload.managed, config);
 
-        match &workload.state {
-            WorkloadState::Queued => {
-                let statuses_by_replica: Vec<SolverReplicaStatus> = (0..parallelism)
-                    .map(|_| SolverReplicaStatus {
-                        phase: Phase::Running,
-                        node: None,
-                    })
-                    .collect();
+        // Store-side workloads are always queued (suspended workloads stay
+        // on their cluster and reach the solver via reflector state).
+        let statuses_by_replica: Vec<SolverReplicaStatus> = (0..parallelism)
+            .map(|_| SolverReplicaStatus {
+                phase: Phase::Running,
+                node: None,
+            })
+            .collect();
 
-                pods.insert(
-                    wl_name.clone(),
-                    SolverPod {
-                        chips_per_replica: chips,
-                        chip_type,
-                        priority,
-                        quota,
-                        cluster: None,
-                        statuses_by_replica,
-                    },
-                );
-            }
-            WorkloadState::Suspended(cluster) => {
-                let statuses_by_replica: Vec<SolverReplicaStatus> = (0..parallelism)
-                    .map(|_| SolverReplicaStatus {
-                        phase: Phase::Suspended,
-                        node: None,
-                    })
-                    .collect();
-
-                pods.insert(
-                    wl_name.clone(),
-                    SolverPod {
-                        chips_per_replica: chips,
-                        chip_type,
-                        priority,
-                        quota,
-                        cluster: Some(cluster.clone()),
-                        statuses_by_replica,
-                    },
-                );
-            }
-        }
+        pods.insert(
+            wl_name.clone(),
+            SolverPod {
+                chips_per_replica: chips,
+                chip_type,
+                priority,
+                quota,
+                cluster: None,
+                statuses_by_replica,
+            },
+        );
     }
 
     let gang_sets = build_gang_sets(runtimes, config, store_workloads, &pods);
@@ -1625,7 +1602,11 @@ async fn apply_suspension(
         return; // Found on this cluster.
     }
 
-    // Try Pod path: delete managed Pod from cluster, move to store as Suspended.
+    // Pod path: deletion-only.  Pods we manage that aren't owned by a Job
+    // come from a Deployment / ReplicaSet / StatefulSet (e.g. KEDA-driven
+    // inference); the owner controller will respawn them on the same
+    // cluster with a fresh template.  We don't store the spec — the
+    // owner is the source of truth.
     for (cluster_name, pod_reader) in &ctx.cluster_pod_readers {
         let target = pod_reader
             .state()
@@ -1664,49 +1645,14 @@ async fn apply_suspension(
             continue;
         };
         let cluster_owned = cluster_name.clone();
-        let store = ctx.store.clone();
-        let wl_name_owned = wl_name.to_string();
-        let prev_generation = ctx
-            .store_snapshot
-            .get(wl_name)
-            .map(|w| w.generation)
-            .unwrap_or(0);
-
-        // Save the original Pod spec (strip runtime fields) for later
-        // recreation on unsuspension.
-        let mut original_pod = pod.as_ref().clone();
-        original_pod.metadata.resource_version = None;
-        original_pod.metadata.uid = None;
-        original_pod.metadata.creation_timestamp = None;
-        original_pod.status = None;
 
         join_set.spawn(async move {
             let pods_api: Api<Pod> = Api::namespaced(client, &ns);
             match pods_api.delete(&k8s_name, &DeleteParams::default()).await {
-                Ok(_) => {
-                    info!(
-                        cluster = cluster_owned,
-                        "suspended (deleted) pod {ns}/{k8s_name}"
-                    );
-                    // Re-enter store as Suspended so the solver can unsuspend later.
-                    // Increment generation so stale placement results from the
-                    // pre-suspension cycle are rejected by generation checks.
-                    if let Some(s) = &store {
-                        let workload = Workload {
-                            managed: ManagedObject::Pod(Box::new(original_pod)),
-                            state: WorkloadState::Suspended(cluster_owned.clone()),
-                            generation: prev_generation.wrapping_add(1),
-                            consecutive_failures: 0,
-                        };
-                        if let Err(e) = s.upsert(wl_name_owned.clone(), workload).await {
-                            warn!(
-                                workload = %wl_name_owned,
-                                cluster = cluster_owned,
-                                "failed to persist suspended pod: {e}"
-                            );
-                        }
-                    }
-                }
+                Ok(_) => info!(
+                    cluster = cluster_owned,
+                    "suspended (deleted) pod {ns}/{k8s_name}"
+                ),
                 Err(e) => warn!(
                     cluster = cluster_owned,
                     "failed to delete pod {ns}/{k8s_name} for suspension: {e}"
@@ -1717,82 +1663,24 @@ async fn apply_suspension(
     }
 }
 
-/// Unsuspend a workload.
+/// Unsuspend a Job.
 ///
-/// - Jobs: flip `spec.suspend = false`.  Pods go Pending with our
-///   `schedulerName`; the next `bind_pending_pods` pass will bind them to
-///   the nodes recorded in `pending_node_assignments`.
-/// - Pods: recreate on the pinned cluster with `spec.nodeName` set directly.
+/// Flips `spec.suspend = false` on the Job; pods go Pending with our
+/// `schedulerName` and the next `bind_pending_pods` pass binds them to
+/// the nodes recorded in `pending_node_assignments`.
+///
+/// Pods don't have a non-Job unsuspension path: KEDA-style Pods aren't
+/// stored on suspension (the owner Deployment respawns them), so when
+/// they reappear they enter via the reflector path as fresh queued
+/// workloads — there's nothing for us to "unsuspend".
 async fn apply_unsuspension(
     wl_name: &str,
-    node_counts: &HashMap<String, u32>,
+    _node_counts: &HashMap<String, u32>,
     ctx: &ApplyContext,
     join_set: &mut tokio::task::JoinSet<()>,
 ) {
     if ctx.dry_run {
-        info!(workload = wl_name, ?node_counts, "would unsuspend");
-        return;
-    }
-
-    // Suspended Pod path: recreate with nodeName set directly.
-    if let Some(workload) = ctx.store_snapshot.get(wl_name)
-        && let WorkloadState::Suspended(ref cluster) = workload.state
-        && let ManagedObject::Pod(ref pod) = workload.managed
-    {
-        let Some(client) = ctx.clients.get(cluster).cloned() else {
-            warn!(
-                workload = wl_name,
-                cluster = cluster,
-                "no client for pinned cluster"
-            );
-            return;
-        };
-        // Single-replica pods: take the first (and only) node.
-        let node_name = match node_counts.keys().next() {
-            Some(n) => n.clone(),
-            None => {
-                warn!(
-                    workload = wl_name,
-                    "unsuspend: no target node in node_counts"
-                );
-                return;
-            }
-        };
-        let pod_owned = pod.clone();
-        let config = ctx.config.clone();
-        let store = ctx.store.clone();
-        let wl_name_owned = wl_name.to_string();
-        let cluster_owned = cluster.clone();
-        let expected_gen = workload.generation;
-
-        join_set.spawn(async move {
-            match create_k8s_pod(&pod_owned, &client, &node_name, &config).await {
-                Ok(()) => {
-                    info!(
-                        cluster = cluster_owned,
-                        "unsuspended pod {wl_name_owned} on {node_name}"
-                    );
-                    if let Some(s) = &store {
-                        use crate::job_store::RemoveOutcome;
-                        match s
-                            .remove_if_generation_matches(&wl_name_owned, expected_gen)
-                            .await
-                        {
-                            Ok(RemoveOutcome::Removed) | Ok(RemoveOutcome::NotPresent) => {}
-                            Ok(RemoveOutcome::GenerationMismatch { .. }) => {}
-                            Err(e) => warn!(
-                                workload = %wl_name_owned,
-                                "persistence remove failed: {e}"
-                            ),
-                        }
-                    }
-                }
-                Err(e) => warn!(
-                    cluster = cluster_owned,
-                    "failed to recreate pod {wl_name_owned}: {e}"
-                ),
-            }
-        });
+        info!(workload = wl_name, "would unsuspend");
         return;
     }
 
@@ -3324,7 +3212,6 @@ mod tests {
     fn backoff_resets_on_capacity_change() {
         let mut wl = Workload {
             managed: ManagedObject::Pod(Box::default()),
-            state: WorkloadState::Queued,
             generation: 0,
             consecutive_failures: 0,
         };

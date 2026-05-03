@@ -14,9 +14,7 @@ use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::Pod;
 use tracing::info;
 
-use crate::job_store::{
-    JobStatus, ManagedObject, SchedulerState, Workload, WorkloadState, WorkloadStore,
-};
+use crate::job_store::{JobStatus, ManagedObject, SchedulerState, Workload, WorkloadStore};
 use crate::snapshot::{Frame, SnapshotState};
 
 #[derive(Clone)]
@@ -150,7 +148,6 @@ async fn submit_job(
 
     let workload = Workload {
         managed: ManagedObject::Job(Box::new(job)),
-        state: WorkloadState::Queued,
         generation: 0,
         consecutive_failures: 0,
     };
@@ -173,40 +170,23 @@ async fn submit_job(
     }
 }
 
+/// Bare Pod submissions are rejected: the scheduler can only re-create or
+/// suspend workloads that have an owner controller (Job, Deployment).  An
+/// orphan Pod that gets preempted has nowhere to come back from.  Submit
+/// via Job, or let a Deployment / ReplicaSet / StatefulSet own the Pod
+/// and the scheduler will pick it up via the reflector path.
 async fn submit_pod(
-    state: AppState,
-    pod: Pod,
+    _state: AppState,
+    _pod: Pod,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, String)> {
-    let name = pod.metadata.name.clone().ok_or_else(|| {
-        (
-            StatusCode::BAD_REQUEST,
-            "Pod must have metadata.name".into(),
-        )
-    })?;
-
-    let workload = Workload {
-        managed: ManagedObject::Pod(Box::new(pod)),
-        state: WorkloadState::Queued,
-        generation: 0,
-        consecutive_failures: 0,
-    };
-    match state.store.insert_new(name.clone(), workload).await {
-        Ok(true) => {
-            info!(workload = %name, kind = "Pod", "workload submitted");
-            Ok((
-                StatusCode::CREATED,
-                Json(serde_json::json!({"name": name, "kind": "Pod", "status": "queued"})),
-            ))
-        }
-        Ok(false) => Err((
-            StatusCode::CONFLICT,
-            format!("workload '{name}' already exists"),
-        )),
-        Err(e) => Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!("persistence error: {e}"),
-        )),
-    }
+    Err((
+        StatusCode::BAD_REQUEST,
+        "Bare Pod submissions are not supported.  Submit a Job (with \
+         spec.suspend: true), or run the Pod under a Deployment / \
+         ReplicaSet / StatefulSet — the scheduler will discover it via \
+         the cluster reflector."
+            .into(),
+    ))
 }
 
 async fn list_workloads(State(state): State<AppState>) -> Json<Vec<String>> {

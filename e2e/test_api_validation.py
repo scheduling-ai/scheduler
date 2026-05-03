@@ -10,7 +10,7 @@ import concurrent.futures
 import pytest
 import requests
 
-from conftest import build_job, submit_job
+from conftest import build_job, build_pod, submit_job, submit_pod
 
 pytestmark = pytest.mark.e2e
 
@@ -36,6 +36,14 @@ def test_reject_unsupported_kind(scheduler):
     manifest = build_job("bad-kind", "h100")
     manifest["kind"] = "Deployment"
     resp = submit_job(scheduler, manifest)
+    assert resp.status_code == 400
+
+
+def test_reject_bare_pod(scheduler):
+    """kind:Pod → 400. Bare Pod submissions aren't supported in v0; the
+    user should submit a Job, or run a Deployment / ReplicaSet that the
+    bridge picks up via the cluster reflector."""
+    resp = submit_pod(scheduler, build_pod("bare-pod", "h100"))
     assert resp.status_code == 400
 
 
