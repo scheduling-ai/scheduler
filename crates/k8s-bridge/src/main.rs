@@ -275,10 +275,15 @@ async fn main() -> anyhow::Result<()> {
             let scheduler_state = job_store::new_scheduler_state();
             let snapshot_state = snapshot::new_snapshot_state();
 
+            let known_quotas: std::collections::HashSet<String> =
+                config.quotas.iter().map(|q| q.name.clone()).collect();
+            let quota_annotation = config.quota_annotation.clone();
             let app = api::router(
                 store.clone(),
                 scheduler_state.clone(),
                 snapshot_state.clone(),
+                known_quotas,
+                quota_annotation,
             );
             let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
             tracing::info!(port, "HTTP API listening");

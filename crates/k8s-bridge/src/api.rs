@@ -14,6 +14,9 @@ use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::Pod;
 use tracing::info;
 
+use std::collections::HashSet;
+use std::sync::Arc;
+
 use crate::job_store::{JobStatus, ManagedObject, SchedulerState, Workload, WorkloadStore};
 use crate::snapshot::{Frame, SnapshotState};
 
@@ -22,15 +25,28 @@ struct AppState {
     store: WorkloadStore,
     scheduler: SchedulerState,
     snapshot: SnapshotState,
+    /// Names of quotas the bridge knows about, derived from `--quotas`.
+    /// Used to fail submissions referencing an unknown quota at the API
+    /// rather than letting them poison every solver cycle until backoff
+    /// kicks in.
+    known_quotas: Arc<HashSet<String>>,
+    quota_annotation: String,
 }
 
-/// Build the axum router with the workload store, scheduler state, and
-/// per-tick snapshot state surfaced at `GET /snapshot` for the UI.
-pub fn router(store: WorkloadStore, scheduler: SchedulerState, snapshot: SnapshotState) -> Router {
+/// Build the axum router.
+pub fn router(
+    store: WorkloadStore,
+    scheduler: SchedulerState,
+    snapshot: SnapshotState,
+    known_quotas: HashSet<String>,
+    quota_annotation: String,
+) -> Router {
     let state = AppState {
         store,
         scheduler,
         snapshot,
+        known_quotas: Arc::new(known_quotas),
+        quota_annotation,
     };
     Router::new()
         .route("/jobs", post(submit_workload).get(list_workloads))
@@ -143,6 +159,28 @@ async fn submit_job(
         return Err((
             StatusCode::BAD_REQUEST,
             "Job must be submitted with spec.suspend: true".into(),
+        ));
+    }
+
+    // Reject submissions referencing an unknown quota at the door — a
+    // single bad quota name otherwise stalls every solver cycle until
+    // backoff kicks in.
+    if let Some(quota) = job
+        .metadata
+        .annotations
+        .as_ref()
+        .and_then(|a| a.get(&state.quota_annotation))
+        && !state.known_quotas.is_empty()
+        && !state.known_quotas.contains(quota)
+    {
+        let mut known: Vec<&str> = state.known_quotas.iter().map(String::as_str).collect();
+        known.sort();
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "Job references unknown quota '{quota}'.  Known quotas: {}",
+                known.join(", ")
+            ),
         ));
     }
 

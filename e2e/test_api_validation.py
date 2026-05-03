@@ -47,6 +47,20 @@ def test_reject_bare_pod(scheduler):
     assert resp.status_code == 400
 
 
+def test_reject_unknown_quota(scheduler):
+    """Job referencing a quota the bridge doesn't know about → 400 at
+    submission time, with the list of known quotas in the message.
+
+    Without this check, a typo'd quota poisons every solver cycle until
+    the workload's backoff threshold trips (~3 cycles of stalled work).
+    """
+    job = build_job("typo-quota", "h100", quota="not-a-real-quota")
+    resp = submit_job(scheduler, job)
+    assert resp.status_code == 400, resp.text
+    assert "unknown quota" in resp.text.lower()
+    assert "not-a-real-quota" in resp.text
+
+
 def test_reject_invalid_json(scheduler):
     """Malformed body → 400."""
     resp = requests.post(

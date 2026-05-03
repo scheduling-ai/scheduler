@@ -675,11 +675,20 @@ pub async fn run(
                     }
                 }
             }
-            Err(e) => warn!(
-                seq,
-                cycle_ms = cycle_start.elapsed().as_millis() as u64,
-                "solver call failed: {e}"
-            ),
+            Err(e) => {
+                warn!(
+                    seq,
+                    cycle_ms = cycle_start.elapsed().as_millis() as u64,
+                    "solver call failed: {e}"
+                );
+                // Solver failures stall the whole cycle — every workload in
+                // the request is delayed.  Surface them in Sentry so we
+                // notice without grepping logs.  The error chain from
+                // `anyhow` includes the Python traceback (see
+                // `solver::call_solver`), which is what we actually want.
+                let err: &(dyn std::error::Error + 'static) = e.as_ref();
+                sentry::capture_error(err);
+            }
         }
     }
 }
