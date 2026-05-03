@@ -90,15 +90,22 @@ Production runs in GKE (see [`infra/`](infra/)), not docker-compose. Deploy with
 
 ### Full stack (needs kind + Docker)
 
+The bridge persists its workload store to Postgres. Local dev brings one up
+via docker-compose; e2e tests use [testcontainers-python](https://testcontainers-python.readthedocs.io/).
+
 ```bash
 uv run python scripts/cluster_setup.py up       # create kind cluster
+docker compose up -d postgres                    # local Postgres for the bridge
 cargo build -p k8s-bridge                        # build Rust bridge
 uv run pytest e2e/                               # e2e tests
 
 # Run the scheduler
-cargo run -p k8s-bridge -- serve --cluster local --port 8080
+DATABASE_URL=postgres://scheduler:scheduler@localhost:5432/scheduler \
+  cargo run -p k8s-bridge -- serve --cluster local --port 8080
 
-# Submit workloads (API accepts JSON; convert the YAML manifest first)
+# Submit workloads (Job only; bare Pod submissions are rejected — let a
+# Deployment / ReplicaSet own the Pod and the bridge picks it up via the
+# cluster reflector).
 curl -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' \
   -d "$(yq -o=json deploy/test-job.yaml)"
 curl http://localhost:8080/status
