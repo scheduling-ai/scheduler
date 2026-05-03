@@ -62,6 +62,11 @@ class GeneratorConfig:
     node_failure_rate: float = 0.005
     node_recovery_rate: float = 0.03
     loop_interval_seconds: float = 5.0
+    # Cap on the sine-wave amplitude for each autoscaled Deployment driven
+    # by `deployment_driver`.  0 disables the driver entirely.  Surfaced
+    # in the UI's traffic-generator panel so a viewer can crank inference
+    # contention up or quiet it down without touching code.
+    deployment_max_replicas: int = 2
     running: bool = True
 
     @classmethod

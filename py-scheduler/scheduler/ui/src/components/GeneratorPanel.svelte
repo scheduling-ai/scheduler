@@ -3,18 +3,25 @@
 
   const gen = $derived(sim.gen);
 
+  let customiseOpen = $state(false);
+
   function markDirty() {
     gen.formDirty = true;
+  }
+
+  function blur() {
+    gen.maybeSave();
+  }
+
+  function toggleRunning() {
+    gen.setRunning(!gen.running);
   }
 </script>
 
 <div class="gen-section">
-  <h3>Scheduler View</h3>
-  <div class="gen-field">
-    <label for="live-scheduler">Solver</label>
+  <label class="gen-field">
+    <span>Solver</span>
     <select
-      id="live-scheduler"
-      style="width:100%"
       bind:value={sim.liveScheduler}
       onchange={() => sim.onLiveSchedulerChange()}
     >
@@ -22,173 +29,205 @@
         <option value={solver.ref}>{solver.name}</option>
       {/each}
     </select>
-  </div>
+  </label>
 </div>
 
 {#if gen.connected}
-  <div class="gen-status-row">
-    <span class="gen-pill" class:running={gen.running}>
-      {gen.running ? "Running" : "Paused"}
-    </span>
-    <span class="gen-pill" class:running={!gen.formDirty}>
-      {gen.formDirty ? "Unsaved" : "Saved"}
-    </span>
-  </div>
-
   <div class="gen-section">
-    <h3>Control</h3>
+    <div class="gen-status-row">
+      <span class="gen-pill" class:running={gen.running}>
+        {gen.running ? "Running" : "Paused"}
+      </span>
+      {#if gen.savedTick}
+        <span class="gen-pill saved">Saved ✓</span>
+      {/if}
+    </div>
+
     <div class="gen-btns">
-      <button class="gen-btn primary" onclick={() => gen.start()}>Start</button>
-      <button class="gen-btn" onclick={() => gen.pause()}>Pause</button>
-      <button class="gen-btn" onclick={() => gen.resume()}>Resume</button>
-      <button class="gen-btn" onclick={() => gen.saveConfig()}
-        >Save config</button
-      >
+      <button class="gen-btn primary" onclick={toggleRunning}>
+        {gen.running ? "Pause" : "Resume"}
+      </button>
     </div>
   </div>
 
   <div class="gen-section">
-    <h3>Config</h3>
     <div class="gen-grid">
-      <div class="gen-field">
-        <label title="RNG seed for reproducible job generation">Seed</label
-        ><input type="number" bind:value={gen.form.seed} oninput={markDirty} />
-      </div>
-      <div class="gen-field">
-        <label title="Average jobs submitted per second">Arrival rate</label
-        ><input
+      <label class="gen-field">
+        <span title="Average jobs submitted per second">Arrival rate</span>
+        <input
           type="number"
           step="0.01"
           bind:value={gen.form.arrival_rate}
           oninput={markDirty}
+          onblur={blur}
         />
-      </div>
-      <div class="gen-field">
-        <label title="Multiplier for periodic traffic spikes"
-          >Burst factor</label
-        ><input
+      </label>
+      <label class="gen-field">
+        <span
+          title="Cap on the sine-wave amplitude for each autoscaled Deployment. 0 turns the autoscaler off."
+          >Max replicas / autoscaled deployment</span
+        >
+        <input
           type="number"
-          step="0.1"
-          bind:value={gen.form.burst_factor}
-          oninput={markDirty}
-        />
-      </div>
-      <div class="gen-field">
-        <label title="Seconds between solver ticks">Loop interval</label><input
-          type="number"
-          step="0.1"
-          bind:value={gen.form.loop_interval_seconds}
-          oninput={markDirty}
-        />
-      </div>
-      <div class="gen-field">
-        <label title="Lowest priority assigned to generated jobs"
-          >Priority min</label
-        ><input
-          type="number"
-          bind:value={gen.form.priority_min}
-          oninput={markDirty}
-        />
-      </div>
-      <div class="gen-field">
-        <label title="Highest priority assigned to generated jobs"
-          >Priority max</label
-        ><input
-          type="number"
-          bind:value={gen.form.priority_max}
-          oninput={markDirty}
-        />
-      </div>
-      <div class="gen-field">
-        <label title="Minimum replicas per generated job">Replica min</label
-        ><input
-          type="number"
-          bind:value={gen.form.replica_min}
-          oninput={markDirty}
-        />
-      </div>
-      <div class="gen-field">
-        <label title="Maximum replicas per generated job">Replica max</label
-        ><input
-          type="number"
-          bind:value={gen.form.replica_max}
-          oninput={markDirty}
-        />
-      </div>
-      <div class="gen-field">
-        <label title="Shortest job runtime in seconds">Runtime min</label><input
-          type="number"
+          min="0"
           step="1"
-          bind:value={gen.form.runtime_min}
+          bind:value={gen.form.deployment_max_replicas}
           oninput={markDirty}
+          onblur={blur}
         />
-      </div>
-      <div class="gen-field">
-        <label title="Longest job runtime in seconds">Runtime max</label><input
-          type="number"
-          step="1"
-          bind:value={gen.form.runtime_max}
-          oninput={markDirty}
-        />
-      </div>
-      <div class="gen-field">
-        <label title="Fraction of jobs generated as gang-scheduled (0–1)"
-          >Gang freq</label
-        ><input
-          type="number"
-          step="0.01"
-          bind:value={gen.form.gang_frequency}
-          oninput={markDirty}
-        />
-      </div>
-      <div class="gen-field">
-        <label title="Probability a replica fails each tick">Replica fail</label
-        ><input
-          type="number"
-          step="0.01"
-          bind:value={gen.form.replica_failure_rate}
-          oninput={markDirty}
-        />
-      </div>
-      <div class="gen-field">
-        <label title="Probability a node fails each tick">Node fail</label
-        ><input
-          type="number"
-          step="0.01"
-          bind:value={gen.form.node_failure_rate}
-          oninput={markDirty}
-        />
-      </div>
-      <div class="gen-field">
-        <label title="Probability a failed node recovers each tick"
-          >Node recover</label
-        ><input
-          type="number"
-          step="0.01"
-          bind:value={gen.form.node_recovery_rate}
-          oninput={markDirty}
-        />
-      </div>
-      <div class="gen-field full">
-        <label title="JSON object mapping quota names to relative weights"
-          >Quota weights</label
-        ><textarea bind:value={gen.form.quota_weights} oninput={markDirty}
-        ></textarea>
-      </div>
-      <div class="gen-field full">
-        <label title="JSON object mapping chip types to relative weights"
-          >Chip weights</label
-        ><textarea bind:value={gen.form.chip_weights} oninput={markDirty}
-        ></textarea>
-      </div>
-      <div class="gen-field full">
-        <label
-          title="Nested JSON: chip type -> chips per replica -> relative weight. A replica must fit on one node, so the chips-per-replica keys stay <= the pool's chips/node (A100=16, H100/H200=8, L40S=4)."
-          >Chips/replica weights</label
-        ><textarea bind:value={gen.form.chips_weights} oninput={markDirty}
-        ></textarea>
-      </div>
+      </label>
     </div>
+  </div>
+
+  <div class="gen-section">
+    <button
+      class="gen-btn customise-toggle"
+      onclick={() => (customiseOpen = !customiseOpen)}
+    >
+      {customiseOpen ? "▾" : "▸"} Customise
+    </button>
+
+    {#if customiseOpen}
+      <div class="gen-grid">
+        <label class="gen-field">
+          <span title="Lowest priority assigned to generated jobs"
+            >Priority min</span
+          >
+          <input
+            type="number"
+            bind:value={gen.form.priority_min}
+            oninput={markDirty}
+            onblur={blur}
+          />
+        </label>
+        <label class="gen-field">
+          <span title="Highest priority assigned to generated jobs"
+            >Priority max</span
+          >
+          <input
+            type="number"
+            bind:value={gen.form.priority_max}
+            oninput={markDirty}
+            onblur={blur}
+          />
+        </label>
+        <label class="gen-field">
+          <span title="Minimum replicas per generated job">Replica min</span>
+          <input
+            type="number"
+            bind:value={gen.form.replica_min}
+            oninput={markDirty}
+            onblur={blur}
+          />
+        </label>
+        <label class="gen-field">
+          <span title="Maximum replicas per generated job">Replica max</span>
+          <input
+            type="number"
+            bind:value={gen.form.replica_max}
+            oninput={markDirty}
+            onblur={blur}
+          />
+        </label>
+        <label class="gen-field">
+          <span title="Shortest job runtime in seconds">Runtime min</span>
+          <input
+            type="number"
+            step="1"
+            bind:value={gen.form.runtime_min}
+            oninput={markDirty}
+            onblur={blur}
+          />
+        </label>
+        <label class="gen-field">
+          <span title="Longest job runtime in seconds">Runtime max</span>
+          <input
+            type="number"
+            step="1"
+            bind:value={gen.form.runtime_max}
+            oninput={markDirty}
+            onblur={blur}
+          />
+        </label>
+        <label class="gen-field">
+          <span title="Fraction of jobs generated as gang-scheduled (0–1)"
+            >Gang frequency</span
+          >
+          <input
+            type="number"
+            step="0.01"
+            bind:value={gen.form.gang_frequency}
+            oninput={markDirty}
+            onblur={blur}
+          />
+        </label>
+        <label class="gen-field">
+          <span
+            title="Multiplier applied to the Poisson arrival rate at each tick to produce burstier traffic"
+            >Burst factor</span
+          >
+          <input
+            type="number"
+            step="0.1"
+            bind:value={gen.form.burst_factor}
+            oninput={markDirty}
+            onblur={blur}
+          />
+        </label>
+        <label class="gen-field">
+          <span title="Seconds between load-generator ticks (Job submissions)"
+            >Loop interval</span
+          >
+          <input
+            type="number"
+            step="0.1"
+            bind:value={gen.form.loop_interval_seconds}
+            oninput={markDirty}
+            onblur={blur}
+          />
+        </label>
+        <label class="gen-field">
+          <span title="RNG seed for reproducible job generation">Seed</span>
+          <input
+            type="number"
+            bind:value={gen.form.seed}
+            oninput={markDirty}
+            onblur={blur}
+          />
+        </label>
+        <label class="gen-field full">
+          <span title="JSON object mapping quota names to relative weights"
+            >Quota weights</span
+          >
+          <textarea
+            bind:value={gen.form.quota_weights}
+            oninput={markDirty}
+            onblur={blur}
+          ></textarea>
+        </label>
+        <label class="gen-field full">
+          <span title="JSON object mapping chip types to relative weights"
+            >Chip weights</span
+          >
+          <textarea
+            bind:value={gen.form.chip_weights}
+            oninput={markDirty}
+            onblur={blur}
+          ></textarea>
+        </label>
+        <label class="gen-field full">
+          <span
+            title="Nested JSON: chip type → chips per replica → relative weight. A replica must fit on one node."
+            >Chips-per-replica weights</span
+          >
+          <textarea
+            bind:value={gen.form.chips_weights}
+            oninput={markDirty}
+            onblur={blur}
+          ></textarea>
+        </label>
+      </div>
+    {/if}
   </div>
 {:else}
   <div class="gen-unavailable">

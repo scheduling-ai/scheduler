@@ -26,6 +26,7 @@ import math
 import os
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from kubernetes import client, config
@@ -53,19 +54,18 @@ class DepSpec:
     chip_type: str
     chips_per_replica: int
     min_replicas: int
-    max_replicas: int
     period_seconds: float
     phase_offset: float
 
 
-# Two Deployments with out-of-phase sine waves.  Replica counts kept low
-# because the demo cluster's chip pools are small (e2-micro, a few chips
-# each); over-provisioning would just produce a queue that never drains.
-# Priorities pitched against the Job-side generator's range (30–99 by
-# default).  serve-flagship sits high enough to consistently land;
-# serve-batch sits in the middle so it wins against low-priority Jobs
-# but loses to bursty high-priority work — making preemption visible
-# in the UI without rigging the demo.
+# Two Deployments with out-of-phase sine waves.  Priorities pitched
+# against the Job-side generator's range (30–99 by default).
+# serve-flagship sits high enough to consistently land; serve-batch
+# sits in the middle so it wins against low-priority Jobs but loses to
+# bursty high-priority work — making preemption visible without rigging
+# the demo.  Per-Deployment max replicas are *capped* at runtime by
+# `GeneratorConfig.deployment_max_replicas` (UI-controlled) so a viewer
+# can dial intensity up or down.
 DEPLOYMENTS: list[DepSpec] = [
     DepSpec(
         name="serve-flagship",
@@ -74,7 +74,6 @@ DEPLOYMENTS: list[DepSpec] = [
         chip_type="H100",
         chips_per_replica=1,
         min_replicas=0,
-        max_replicas=2,
         period_seconds=240,  # 4-minute cycle
         phase_offset=0.0,
     ),
@@ -85,17 +84,16 @@ DEPLOYMENTS: list[DepSpec] = [
         chip_type="A100",
         chips_per_replica=1,
         min_replicas=0,
-        max_replicas=2,
         period_seconds=300,  # 5-minute cycle, out of phase
         phase_offset=math.pi / 2,
     ),
 ]
 
 
-def _replicas_at(spec: DepSpec, t_seconds: float) -> int:
-    span = spec.max_replicas - spec.min_replicas
+def _replicas_at(spec: DepSpec, t_seconds: float, max_replicas: int) -> int:
+    span = max_replicas - spec.min_replicas
     if span <= 0:
-        return spec.min_replicas
+        return 0
     angle = 2 * math.pi * t_seconds / spec.period_seconds + spec.phase_offset
     fraction = (math.sin(angle) + 1) / 2  # 0..1
     return spec.min_replicas + round(fraction * span)
@@ -194,7 +192,7 @@ def _scale_deployment(apps_api: client.AppsV1Api, spec: DepSpec, replicas: int) 
     )
 
 
-def driver_loop(stop: threading.Event) -> None:
+def driver_loop(stop: threading.Event, max_replicas: Callable[[], int]) -> None:
     try:
         config.load_incluster_config()
     except config.ConfigException:
@@ -213,26 +211,33 @@ def driver_loop(stop: threading.Event) -> None:
     last_replicas: dict[str, int] = {}
     while not stop.is_set():
         t = time.monotonic() - start
+        cap = max(0, int(max_replicas()))
         for spec in DEPLOYMENTS:
-            replicas = _replicas_at(spec, t)
+            replicas = _replicas_at(spec, t, cap)
             if last_replicas.get(spec.name) == replicas:
                 continue  # avoid spurious patches
             try:
                 _scale_deployment(apps_api, spec, replicas)
-                log.info("scaled %s -> %d replicas", spec.name, replicas)
+                log.info("scaled %s -> %d replicas (cap=%d)", spec.name, replicas, cap)
                 last_replicas[spec.name] = replicas
             except ApiException as e:
                 log.warning("scale %s: %s", spec.name, e)
         stop.wait(TICK_SECONDS)
 
 
-def start(stop: threading.Event) -> threading.Thread | None:
-    """Spin up the driver loop in a daemon thread.  Returns None if the
-    feature is disabled via env."""
+def start(stop: threading.Event, max_replicas: Callable[[], int]) -> threading.Thread | None:
+    """Spin up the driver loop in a daemon thread.
+
+    `max_replicas` is a callable read each tick — the load-generator
+    plumbs it to `GeneratorConfig.deployment_max_replicas` so the UI's
+    traffic-generator panel can change it live without restart.
+
+    Returns None if the feature is disabled via env.
+    """
     if not ENABLED:
         log.info("deployment driver disabled (DEPLOYMENT_DRIVER_ENABLED=0)")
         return None
-    t = threading.Thread(target=driver_loop, args=(stop,), daemon=True)
+    t = threading.Thread(target=driver_loop, args=(stop, max_replicas), daemon=True)
     t.start()
     log.info(
         "deployment driver started: deployments=%s tick=%ss",

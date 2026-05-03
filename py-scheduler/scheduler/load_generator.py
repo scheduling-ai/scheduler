@@ -313,11 +313,17 @@ def main() -> None:
     ticker.start()
 
     # Drive a small set of Deployments alongside Job submissions so the
-    # live UI exercises the bridge's KEDA-style code path.  No-op if
+    # live UI exercises the bridge's KEDA-style code path.  The cap is
+    # read live from the shared config so the UI's `deployment_max_replicas`
+    # field takes effect without a restart.  No-op if
     # DEPLOYMENT_DRIVER_ENABLED=0.
     from scheduler import deployment_driver
 
-    deployment_driver.start(state.stop)
+    def _current_max() -> int:
+        with state.lock:
+            return state.config.deployment_max_replicas
+
+    deployment_driver.start(state.stop, _current_max)
 
     server = http.server.ThreadingHTTPServer(("", PORT), make_handler(state))
     log.info("serving on :%d", PORT)
