@@ -135,3 +135,85 @@ def test_scheduler_restart_with_existing_cluster_objects(
         proc2.terminate()
         proc2.wait(timeout=10)
         shutil.rmtree(restart_tmp, ignore_errors=True)
+
+
+def test_queued_workload_survives_bridge_restart(
+    rust_binary, kind_clusters, k8s_clients, postgres_url
+):
+    """A queued (un-placeable) workload must come back after a bridge SIGKILL.
+
+    Submits a workload pinned to a chip type that no kind cluster has, so the
+    solver provably cannot place it.  The workload sits in the queue; we
+    SIGKILL the bridge (no graceful drain), restart on the same Postgres URL,
+    and assert the workload is still listed.  This exercises the persistence
+    write-through + restore path end-to-end.
+    """
+    tmp = Path(tempfile.mkdtemp(prefix="scheduler-persist-"))
+    record_path = tmp / "session.jsonl"
+
+    def start_bridge(p):
+        proc = subprocess.Popen(
+            [
+                str(rust_binary),
+                "serve",
+                "--cluster",
+                f"cluster-a:kind-{CLUSTER_A}",
+                "--cluster",
+                f"cluster-b:kind-{CLUSTER_B}",
+                "--port",
+                str(p),
+                "--quotas",
+                str(QUOTAS_PATH),
+                "--chip-label",
+                "accelerator",
+                "--chip-resource",
+                CHIP_RESOURCE,
+                "--record",
+                str(record_path),
+                "--solver",
+                "milp",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={**SOLVER_ENV, "DATABASE_URL": postgres_url},
+        )
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            try:
+                requests.get(f"http://localhost:{p}/jobs", timeout=1)
+                return proc
+            except requests.ConnectionError:
+                time.sleep(0.5)
+        proc.kill()
+        raise TimeoutError("bridge did not start")
+
+    # Run 1 — submit unplaceable workload.
+    port = find_free_port()
+    proc1 = start_bridge(port)
+    base = f"http://localhost:{port}"
+    try:
+        # h200 isn't on any kind cluster → solver can't place → stays queued.
+        sched = Scheduler(proc=proc1, base_url=base, record_path=record_path)
+        resp = submit_job(sched, build_job("queue-survivor", "h200", priority=1))
+        assert resp.status_code == 201
+        wait_for(
+            lambda: "queue-survivor" in requests.get(f"{base}/jobs", timeout=5).json(),
+            desc="workload listed in /jobs",
+        )
+    finally:
+        proc1.kill()  # SIGKILL: no graceful drain, no late writes.
+        proc1.wait(timeout=10)
+
+    # Run 2 — same DATABASE_URL, fresh process, fresh in-memory map.
+    port = find_free_port()
+    proc2 = start_bridge(port)
+    base = f"http://localhost:{port}"
+    try:
+        names = requests.get(f"{base}/jobs", timeout=5).json()
+        assert "queue-survivor" in names, f"queued workload lost; /jobs={names}"
+        # Cleanup so this row doesn't leak across the session-scoped Postgres.
+        requests.delete(f"{base}/jobs/queue-survivor", timeout=5)
+    finally:
+        proc2.terminate()
+        proc2.wait(timeout=10)
+        shutil.rmtree(tmp, ignore_errors=True)
