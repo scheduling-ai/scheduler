@@ -131,6 +131,41 @@ resource "google_artifact_registry_repository" "images" {
   depends_on = [google_project_service.artifactregistry]
 }
 
+# --- DB node pool: dedicated host for the in-cluster Postgres ---
+#
+# A single e2-small spot node gives Postgres a guaranteed ~940m CPU and
+# ~1.5 GB allocatable memory, isolated from the GKE system pods that
+# crowd the system pool.  Single replica + spot means ~3–5 min of
+# downtime if the node is evicted; acceptable for the demo.
+#
+# Tainted so nothing else lands here.  Postgres tolerates it.  Adds
+# ~$5/month.
+resource "google_container_node_pool" "db" {
+  name       = "db"
+  cluster    = google_container_cluster.this.name
+  location   = var.zone
+  node_count = 1
+
+  node_config {
+    machine_type = "e2-small"
+    spot         = true
+    disk_size_gb = 15
+    disk_type    = "pd-standard"
+
+    labels = {
+      "dedicated" = "db"
+    }
+
+    taint {
+      key    = "dedicated"
+      value  = "db"
+      effect = "NO_SCHEDULE"
+    }
+
+    oauth_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+  }
+}
+
 resource "google_container_node_pool" "chip" {
   for_each = local.chip_pools
 
