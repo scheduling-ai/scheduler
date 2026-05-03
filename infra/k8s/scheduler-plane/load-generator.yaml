@@ -26,6 +26,7 @@ spec:
       labels:
         app: load-generator
     spec:
+      serviceAccountName: scheduler
       containers:
         - name: generator
           image: ${IMAGE}
@@ -42,6 +43,8 @@ spec:
               value: scheduler.example.com/managed
             - name: TAINT_VALUE
               value: "true"
+            - name: DEPLOYMENT_DRIVER_NAMESPACE
+              value: default
             # Empty → Jobs omit the GPU resource request (no device plugin on
             # the demo cluster), chip count goes through the annotation.
             - name: CHIP_RESOURCE

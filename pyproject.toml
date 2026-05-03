@@ -5,6 +5,7 @@ description = "Multi-cluster GPU job scheduler"
 requires-python = ">=3.13,<3.14"
 dependencies = [
     "highspy>=1.13.1",
+    "kubernetes>=32.0.1",
     "numpy>=2.4.2",
     "pyomo>=6.10.0",
     "sentry-sdk>=2.55.0",
@@ -28,7 +29,6 @@ load-generator = "scheduler.load_generator:main"
 
 [dependency-groups]
 dev = [
-    "kubernetes>=32.0.1",
     "playwright>=1.58.0",
     "pytest>=9.0.2",
     "requests>=2.31",

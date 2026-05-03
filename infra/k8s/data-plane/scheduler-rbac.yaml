@@ -84,3 +84,35 @@ roleRef:
   kind: ClusterRole
   name: scheduler-impersonator
   apiGroup: rbac.authorization.k8s.io
+---
+# load-generator owns a small set of Deployments in the data-plane
+# namespace and patches their replicas on a synthetic schedule, so the
+# live UI exercises the bridge's KEDA-style code path.  Reuses the
+# `scheduler` ServiceAccount; restricted to the `default` namespace via
+# a Role rather than a ClusterRole.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: scheduler-deployment-driver
+  namespace: default
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "patch", "update"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: scheduler-deployment-driver
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: scheduler
+    namespace: scheduler-system
+roleRef:
+  kind: Role
+  name: scheduler-deployment-driver
+  apiGroup: rbac.authorization.k8s.io

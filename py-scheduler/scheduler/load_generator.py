@@ -312,6 +312,13 @@ def main() -> None:
     ticker = threading.Thread(target=tick_loop, args=(state,), daemon=True)
     ticker.start()
 
+    # Drive a small set of Deployments alongside Job submissions so the
+    # live UI exercises the bridge's KEDA-style code path.  No-op if
+    # DEPLOYMENT_DRIVER_ENABLED=0.
+    from scheduler import deployment_driver
+
+    deployment_driver.start(state.stop)
+
     server = http.server.ThreadingHTTPServer(("", PORT), make_handler(state))
     log.info("serving on :%d", PORT)
     try:
