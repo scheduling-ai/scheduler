@@ -820,103 +820,10 @@ fn build_solver_request_multi(
     }
 }
 
-/// Extract scheduling metadata from a workload's managed object.
-fn extract_workload_metadata(
-    managed: &ManagedObject,
-    config: &BinderConfig,
-) -> (u32, String, i32, String, u32) {
-    match managed {
-        ManagedObject::Job(job) => extract_job_metadata(job, config),
-        ManagedObject::Pod(pod) => extract_pod_metadata(pod, config),
-    }
-}
-
-/// Whether `quota` is one of the names the bridge was started with.
-/// Empty quota list = passthrough (no validation), matching the API
-/// path's behaviour.
-fn is_known_quota(config: &BinderConfig, quota: &str) -> bool {
-    config.quotas.is_empty() || config.quotas.iter().any(|q| q.name == quota)
-}
-
-/// Extract scheduling metadata from a k8s Job manifest.
-fn extract_job_metadata(job: &K8sJob, config: &BinderConfig) -> (u32, String, i32, String, u32) {
-    let spec = job.spec.as_ref();
-    let pod_spec = spec.and_then(|s| s.template.spec.as_ref());
-
-    let chips_from_resource = pod_spec
-        .and_then(|ps| ps.containers.first())
-        .and_then(|c| c.resources.as_ref())
-        .and_then(|r| r.requests.as_ref())
-        .and_then(|r| r.get(&config.chip_resource))
-        .and_then(|q| q.0.parse::<u32>().ok())
-        .unwrap_or(0);
-    let chips = if chips_from_resource > 0 {
-        chips_from_resource
-    } else {
-        chips_from_annotation(job.annotations(), config)
-    };
-
-    let chip_type = job
-        .labels()
-        .get(&config.chip_label)
-        .cloned()
-        .unwrap_or_default();
-
-    let priority = job
-        .annotations()
-        .get(&config.priority_annotation)
-        .and_then(|v| v.parse::<i32>().ok())
-        .unwrap_or(0);
-
-    let quota = job
-        .annotations()
-        .get(&config.quota_annotation)
-        .cloned()
-        .unwrap_or_else(|| "default".into());
-
-    let parallelism = spec.and_then(|s| s.parallelism).unwrap_or(1) as u32;
-
-    (chips, chip_type, priority, quota, parallelism)
-}
-
-/// Extract scheduling metadata from a k8s Pod manifest.
-fn extract_pod_metadata(pod: &Pod, config: &BinderConfig) -> (u32, String, i32, String, u32) {
-    let pod_spec = pod.spec.as_ref();
-
-    let chips_from_resource = pod_spec
-        .and_then(|ps| ps.containers.first())
-        .and_then(|c| c.resources.as_ref())
-        .and_then(|r| r.requests.as_ref())
-        .and_then(|r| r.get(&config.chip_resource))
-        .and_then(|q| q.0.parse::<u32>().ok())
-        .unwrap_or(0);
-    let chips = if chips_from_resource > 0 {
-        chips_from_resource
-    } else {
-        chips_from_annotation(pod.annotations(), config)
-    };
-
-    let chip_type = pod
-        .labels()
-        .get(&config.chip_label)
-        .cloned()
-        .unwrap_or_default();
-
-    let priority = pod
-        .annotations()
-        .get(&config.priority_annotation)
-        .and_then(|v| v.parse::<i32>().ok())
-        .unwrap_or(0);
-
-    let quota = pod
-        .annotations()
-        .get(&config.quota_annotation)
-        .cloned()
-        .unwrap_or_else(|| "default".into());
-
-    // Pods are always a single replica.
-    (chips, chip_type, priority, quota, 1)
-}
+mod extract;
+use extract::{
+    extract_job_metadata, extract_pod_metadata, extract_workload_metadata, is_known_quota,
+};
 
 /// Build the [`SolverCluster`] (topology) and solver pods for a single cluster.
 ///
@@ -2080,21 +1987,6 @@ async fn update_scheduler_state(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Read per-replica chip count from the configured annotation (if any).
-/// Falls back to 0 if unset or unparseable — used only as a fallback when
-/// the workload's resource request is missing/zero.
-fn chips_from_annotation(
-    annotations: &std::collections::BTreeMap<String, String>,
-    config: &BinderConfig,
-) -> u32 {
-    config
-        .chips_annotation
-        .as_deref()
-        .and_then(|k| annotations.get(k))
-        .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(0)
-}
 
 /// Read per-node chip count. If `chip_count_label` is set, the count comes
 /// from that node label (used by test clusters without a device plugin);
