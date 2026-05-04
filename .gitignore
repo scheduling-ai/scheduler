@@ -20,4 +20,6 @@ docs/private/
 
 # UI (Svelte/Vite)
 py-scheduler/scheduler/ui/node_modules/
-py-scheduler/scheduler/ui/dist/
+py-scheduler/scheduler/ui/dist/.claude/
+.gemini/
+Screenshot*
