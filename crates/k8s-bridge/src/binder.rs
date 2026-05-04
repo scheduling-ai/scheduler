@@ -120,9 +120,38 @@ impl Default for BinderConfig {
 /// underlying store when a reflector stream is restarted.
 type SharedStore<T> = Arc<std::sync::RwLock<reflector::Store<T>>>;
 
-/// Per-job pending node assignment: node->count map, insertion time, and
-/// optional solver pod snapshot for the gap cycle.
-type PendingNodeMap =
+/// In-memory shadow of placements the binder has applied to k8s but the
+/// reflector has not yet observed.  Bridges the gap between two
+/// eventually-consistent sources of truth: the workload store (removed as
+/// soon as the k8s create succeeds) and the cluster reflector (catches up a
+/// cycle or two later).
+///
+/// Without this shadow the solver would, for one cycle, see the assigned
+/// nodes as free and could over-commit them.
+///
+/// Each entry carries: per-node replica counts (used by `bind_pending_pods`
+/// to know which Pods to bind to which nodes), an insertion timestamp (TTL
+/// safety net), and an optional `SolverPod` snapshot (re-injected into the
+/// solver request to keep the workload accounted for during the gap).
+///
+/// Lifecycle:
+///
+/// - **Inserted**: in the binder loop after a successful k8s create
+///   (`apply_assignments_multi` returns) — see the post-apply block in
+///   `run_loop`.
+/// - **Removed** (any one of):
+///   1. Reflector confirms the Job and we account for its Pods properly
+///      (multiple branches in `build_cluster_state`).
+///   2. The Job has vanished from the cluster reflector for long enough
+///      that the targeted-cluster cleanup at the end of
+///      `build_cluster_state` drops it.
+///   3. TTL expiry (`PENDING_TTL`) — last-resort safety net for entries
+///      neither confirmed nor explicitly cleaned.
+///
+/// State is in-memory only.  On bridge restart the map is empty and the
+/// reflector's initial list-watch repopulates ground truth before the
+/// first solver cycle runs.
+type PlacementShadow =
     HashMap<String, (HashMap<String, u32>, std::time::Instant, Option<SolverPod>)>;
 
 /// Per-cluster runtime state: kube client and reflector readers.
@@ -390,7 +419,7 @@ pub async fn run(
     // is used in build_solver_request_multi to inject the pod into the
     // solver request during the gap cycle.
     const PENDING_TTL: Duration = Duration::from_secs(30);
-    let mut pending_node_assignments: PendingNodeMap = HashMap::new();
+    let mut placement_shadow: PlacementShadow = HashMap::new();
     let mut seq: u64 = 0;
     let mut last_tick_at: Option<std::time::Instant> = None;
     let mut was_unhealthy = false;
@@ -404,7 +433,7 @@ pub async fn run(
 
         // Expire pending entries whose pods never appeared (e.g. job was
         // deleted externally between placement and reflector confirmation).
-        pending_node_assignments.retain(|_, (_, inserted, _)| inserted.elapsed() < PENDING_TTL);
+        placement_shadow.retain(|_, (_, inserted, _)| inserted.elapsed() < PENDING_TTL);
 
         // Pause if any reflector has died.
         let unhealthy: Vec<&str> = runtimes
@@ -501,7 +530,7 @@ pub async fn run(
                     &runtimes,
                     config,
                     &store_snapshot,
-                    &mut pending_node_assignments,
+                    &mut placement_shadow,
                 );
                 let frame = snapshot::build_frame(seq, &config.solver_name, &request, "empty", 0);
                 *snap.lock().await = Some(frame);
@@ -518,19 +547,15 @@ pub async fn run(
         // Bind any Pending pods that appeared since the last cycle.  This
         // must happen before building the solver request so that nodes being
         // bound this cycle are already occupied in the solver's view (via
-        // pending_node_assignments — cleared once the reflector confirms).
-        bind_pending_pods(&runtimes, &clients, config, &pending_node_assignments).await;
+        // placement_shadow — cleared once the reflector confirms).
+        bind_pending_pods(&runtimes, &clients, config, &placement_shadow).await;
 
         info!(
             store_workloads = store_snapshot.len(),
             "building solver request"
         );
-        let request = build_solver_request_multi(
-            &runtimes,
-            config,
-            &store_snapshot,
-            &mut pending_node_assignments,
-        );
+        let request =
+            build_solver_request_multi(&runtimes, config, &store_snapshot, &mut placement_shadow);
 
         let request_pods = request.pods.len();
         let request_gangs = request.gang_sets.len();
@@ -644,14 +669,13 @@ pub async fn run(
                             statuses_by_replica: statuses,
                         }
                     });
-                    pending_node_assignments
-                        .insert(name.clone(), (node_counts.clone(), now, solver_pod));
+                    placement_shadow.insert(name.clone(), (node_counts.clone(), now, solver_pod));
                 }
                 for (name, node_counts) in &diff.unsuspend {
                     // Unsuspend entries: job is already in the reflector, so
                     // build_cluster_state handles capacity directly.  No pod
                     // snapshot needed.
-                    pending_node_assignments.insert(name.clone(), (node_counts.clone(), now, None));
+                    placement_shadow.insert(name.clone(), (node_counts.clone(), now, None));
                 }
 
                 // Update backoff counters for store workloads: increment
@@ -703,7 +727,7 @@ fn build_solver_request_multi(
     runtimes: &[ClusterRuntime],
     config: &BinderConfig,
     store_workloads: &HashMap<String, Workload>,
-    pending_nodes: &mut PendingNodeMap,
+    placement_shadow: &mut PlacementShadow,
 ) -> SolverRequest {
     let mut cluster_states: Vec<SolverCluster> = Vec::with_capacity(runtimes.len());
     let mut pods: HashMap<String, SolverPod> = HashMap::new();
@@ -713,7 +737,7 @@ fn build_solver_request_multi(
         let pod_r = rt.pod_reader();
         let job_r = rt.job_reader();
         let (cluster, cluster_pods) =
-            build_cluster_state(&node_r, &pod_r, &job_r, &rt.name, config, pending_nodes);
+            build_cluster_state(&node_r, &pod_r, &job_r, &rt.name, config, placement_shadow);
         cluster_states.push(cluster);
 
         for (name, pod) in cluster_pods {
@@ -727,7 +751,7 @@ fn build_solver_request_multi(
     // the workload from the store as soon as the k8s create succeeds) and the
     // job reflector confirming the new Job.  Without this, the solver would
     // see the assigned nodes as free and could place another workload there.
-    for (name, (_, _, solver_pod)) in pending_nodes.iter() {
+    for (name, (_, _, solver_pod)) in placement_shadow.iter() {
         if pods.contains_key(name) {
             continue; // Already accounted for via the reflector.
         }
@@ -906,7 +930,7 @@ fn build_cluster_state(
     // Pending node assignments from a recent cycle: jobs that were just placed
     // or unsuspended whose pods may not yet be visible in the reflector.
     // Entries are removed here as soon as the reflector confirms the pods.
-    pending_nodes: &mut PendingNodeMap,
+    placement_shadow: &mut PlacementShadow,
 ) -> (SolverCluster, HashMap<String, SolverPod>) {
     let solver_nodes: Vec<SolverNode> = get_candidate_nodes(node_store, config)
         .iter()
@@ -935,7 +959,7 @@ fn build_cluster_state(
         // "Running/None" replicas (see build_replica_statuses_from_job_pods)
         // and reach the solver/snapshot as zombie queued work.
         if is_job_finished(&job) {
-            pending_nodes.remove(&job_name);
+            placement_shadow.remove(&job_name);
             continue;
         }
 
@@ -947,7 +971,7 @@ fn build_cluster_state(
                 quota = %quota,
                 "skipping reflector-discovered Job with unknown quota"
             );
-            pending_nodes.remove(&job_name);
+            placement_shadow.remove(&job_name);
             continue;
         }
 
@@ -971,7 +995,7 @@ fn build_cluster_state(
             } else {
                 // Pods fully gone — capacity is free. Also clean up any stale
                 // pending-placement entry that predates this suspension.
-                pending_nodes.remove(&job_name);
+                placement_shadow.remove(&job_name);
                 (0..parallelism)
                     .map(|_| SolverReplicaStatus {
                         phase: Phase::Suspended,
@@ -981,9 +1005,9 @@ fn build_cluster_state(
             }
         } else if pods_exist_for_job(pod_store, &job) {
             // Reflector has confirmed the pods — clear any pending entry.
-            pending_nodes.remove(&job_name);
+            placement_shadow.remove(&job_name);
             build_replica_statuses_from_job_pods(pod_store, &job, parallelism)
-        } else if let Some((node_counts, _, _)) = pending_nodes.get(&job_name) {
+        } else if let Some((node_counts, _, _)) = placement_shadow.get(&job_name) {
             // Pods not yet visible but we know where they were placed.
             // Reconstruct statuses from the recorded node assignments so
             // those nodes appear occupied to the solver this cycle.
@@ -1139,7 +1163,7 @@ fn build_cluster_state(
                 .unwrap_or_else(|| job.name_any())
         })
         .collect();
-    pending_nodes.retain(|name, (_, _, solver_pod)| {
+    placement_shadow.retain(|name, (_, _, solver_pod)| {
         // Only clean up entries that target this cluster.
         let targets_this_cluster =
             solver_pod.as_ref().and_then(|p| p.cluster.as_deref()) == Some(cluster_name);
@@ -1175,7 +1199,7 @@ fn build_cluster_state(
 /// store and has already been bound to a node (`spec.nodeName` is set).
 ///
 /// Unbound Pending pods (waiting for the Binding API call) are intentionally
-/// excluded: `pending_node_assignments` remains authoritative until the
+/// excluded: `placement_shadow` remains authoritative until the
 /// reflector confirms a bound pod, ensuring the solver does not see those
 /// nodes as free between placement and binding confirmation.
 /// Returns true if the Job is in a terminal state (Complete or Failed).
@@ -1720,7 +1744,7 @@ async fn apply_suspension(
 ///
 /// Flips `spec.suspend = false` on the Job; pods go Pending with our
 /// `schedulerName` and the next `bind_pending_pods` pass binds them to
-/// the nodes recorded in `pending_node_assignments`.
+/// the nodes recorded in `placement_shadow`.
 ///
 /// Pods don't have a non-Job unsuspension path: KEDA-style Pods aren't
 /// stored on suspension (the owner Deployment respawns them), so when
@@ -1917,14 +1941,14 @@ async fn bind_pod(client: &Client, ns: &str, pod_name: &str, node_name: &str) ->
 /// Bind any Pending pods that have our `schedulerName` and no `nodeName` yet.
 ///
 /// Called each cycle before the solver request is built.  The
-/// `pending_node_assignments` map tells us which node each job's replicas
+/// `placement_shadow` map tells us which node each job's replicas
 /// should land on; we distribute Pending pods across those nodes in name-sorted
 /// order for stability.
 async fn bind_pending_pods(
     runtimes: &[ClusterRuntime],
     clients: &HashMap<String, Client>,
     config: &BinderConfig,
-    pending_nodes: &PendingNodeMap,
+    placement_shadow: &PlacementShadow,
 ) {
     for rt in runtimes {
         let Some(client) = clients.get(&rt.name) else {
@@ -1988,7 +2012,7 @@ async fn bind_pending_pods(
                         .unwrap_or("");
                     if job_uid.is_empty() {
                         // Not Job-owned and no label — use pod name as
-                        // last resort; pending_node_assignments lookup
+                        // last resort; placement_shadow lookup
                         // will likely miss but we tried.
                         pod.name_any()
                     } else {
@@ -2012,7 +2036,7 @@ async fn bind_pending_pods(
         }
 
         for (wl_name, mut pods) in by_workload {
-            let Some((node_counts, _, _)) = pending_nodes.get(&wl_name) else {
+            let Some((node_counts, _, _)) = placement_shadow.get(&wl_name) else {
                 continue;
             };
 
@@ -2781,7 +2805,7 @@ mod tests {
     /// Gap 2: job was just placed/unsuspended, pods not yet in reflector.
     /// The pending-nodes map must be used to keep those nodes occupied.
     #[test]
-    fn pending_nodes_used_before_pods_appear_in_reflector() {
+    fn placement_shadow_used_before_pods_appear_in_reflector() {
         let config = BinderConfig::default();
         let job = test_job("uid-1", false, 1, &config);
 
@@ -2819,7 +2843,7 @@ mod tests {
     /// Gap 2 (resolved): pods have appeared in the reflector.
     /// The actual pod's node is used and the pending entry is cleared.
     #[test]
-    fn pending_nodes_cleared_once_pods_confirmed_in_reflector() {
+    fn placement_shadow_cleared_once_pods_confirmed_in_reflector() {
         let config = BinderConfig::default();
         let job = test_job("uid-1", false, 1, &config);
         let pod = test_pod("pod-0", "uid-1", "node-042");
