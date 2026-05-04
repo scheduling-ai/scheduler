@@ -497,11 +497,13 @@ def solve(
     )
 
     results: SolverResults | None = None
-    for _, stage_expr, fix_name in stage_specs:
+    for stage_name, stage_expr, fix_name in stage_specs:
         remaining_time = max(deadline - monotonic(), 0.1)
         _set_time_limit(optimizer, remaining_time)
         model.objective.set_value(stage_expr)
+        stage_started = monotonic()
         results = optimizer.solve(model, tee=verbose, load_solutions=False)
+        _emit_stage_metric(stage_name, monotonic() - stage_started, _solver_status(results))
         if _has_solution(results):
             model.solutions.load_from(results)
         else:
@@ -713,6 +715,24 @@ def _is_optimal(results: SolverResults) -> bool:
 
 def _has_solution(results: SolverResults) -> bool:
     return bool(getattr(results, "solution", ()))
+
+
+def _emit_stage_metric(stage: str, elapsed_s: float, status: str) -> None:
+    """Emit a per-stage timing metric so we can see *which* lex stage hit
+    its budget on a non-optimal solve. Without this all you have is the
+    overall solver_status, which can't distinguish "soft-tiebreaker
+    skipped" (fine) from "top-priority stage timed out" (bad)."""
+    try:
+        import sentry_sdk
+
+        sentry_sdk.metrics.distribution(
+            "solver.stage_duration_ms",
+            round(elapsed_s * 1000),
+            unit="millisecond",
+            attributes={"stage": stage, "status": status},
+        )
+    except Exception:
+        pass
 
 
 def _solver_status(results: SolverResults) -> str:
