@@ -283,12 +283,24 @@ pub(super) fn build_cluster_state(
             continue;
         }
 
-        let pod_name = pod
-            .labels()
-            .get(&config.job_name_label)
-            .cloned()
-            .unwrap_or_else(|| pod.name_any());
+        // Per the model.py contract, each k8s Pod becomes its own
+        // single-replica SolverPod — independently schedulable and
+        // reclaimable, no gang-scheduling.  This means the SolverPod key
+        // must be the k8s pod name, not the `job-name` label: a
+        // Deployment's ReplicaSet stamps the same `job-name` onto every
+        // replica's pod template (see deployment_driver.py), so keying
+        // by label would collapse N replicas into one entry and silently
+        // drop the rest from the solver's view.
+        //
+        // Aside: each replica adds one entry to the SolverRequest. Wire
+        // and solve cost scale with replicas × candidate-nodes, which is
+        // the same regardless of grouping — a 50-replica Deployment is
+        // 50 placement decisions either way.
+        let pod_name = pod.name_any();
 
+        // Defensive: skip if a Job has already claimed this name.  This
+        // is rare (would require a managed Pod whose name collides with
+        // a Job's `job-name` label value) but cheap to check.
         if solver_pods.contains_key(&pod_name) {
             continue;
         }
@@ -558,11 +570,10 @@ fn build_gang_sets(
                 continue;
             }
 
-            let pod_name = pod
-                .labels()
-                .get(&config.job_name_label)
-                .cloned()
-                .unwrap_or_else(|| pod.name_any());
+            // Match the SolverPod key used in build_cluster_state above:
+            // each managed standalone Pod is its own SolverPod, keyed
+            // by k8s pod name.
+            let pod_name = pod.name_any();
 
             if !known_pods.contains_key(&pod_name) {
                 continue;

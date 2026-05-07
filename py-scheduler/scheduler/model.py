@@ -94,16 +94,20 @@ class Pod:
     ``cluster`` is None until the pod is first placed; once set, the pod
     is bound to that cluster for its lifetime.
 
-    The binder constructs these from k8s state, grouping k8s pods by their
-    ``job-name`` label. How different k8s workloads map to Pods:
+    The binder constructs these from k8s state. How different k8s
+    workloads map to Pods (and what serves as the SolverPod key):
 
-    * **Jobs** — one Pod per Job, one replica per k8s pod. All replicas
-      are gang-scheduled (placed together or not at all).
+    * **Jobs** — one Pod per Job, one replica per k8s pod. The key is
+      the Job's ``job-name`` label. All replicas are gang-scheduled
+      (placed together or not at all).
     * **Deployments** — one Pod *per k8s pod* (single replica each),
-      independently schedulable and reclaimable. The external autoscaler
-      scales by creating or removing these single-replica Pods. Because
-      they are not gang-scheduled, the solver can reclaim any individual
-      deployment pod without all-or-nothing cascades.
+      independently schedulable and reclaimable. The key is the k8s pod
+      name; the ``job-name`` label is *not* unique across a Deployment's
+      replicas (the ReplicaSet stamps the same label onto every replica),
+      so it cannot serve as the SolverPod key here. The external
+      autoscaler scales by creating or removing these single-replica
+      Pods. Because they are not gang-scheduled, the solver can reclaim
+      any individual deployment pod without all-or-nothing cascades.
     * **Cross-cluster training** — separate Pods (one per cluster) linked
       via ``gang_sets`` on the SolverRequest for atomic co-scheduling.
 

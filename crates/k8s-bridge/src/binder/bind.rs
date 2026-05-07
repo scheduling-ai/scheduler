@@ -101,35 +101,38 @@ pub(super) async fn bind_pending_pods(
             continue;
         }
 
-        // Group by logical workload name.
+        // Group by the same key the solver uses for SolverPod:
         //
-        // Preferred path: read the pod's `job-name` label.  Both the
-        // load-generator's Job templates and the deployment-driver's
-        // Deployment templates set this label.
+        // - Job-owned pods: all replicas of a Job share one SolverPod
+        //   (`job-name` label value).  Read it from the pod's label, or
+        //   fall back to the parent Job's label if the template omits
+        //   it (the bridge only auto-injects `managed-by`).
         //
-        // Fallback for Job-spawned pods: when the pod template doesn't
-        // carry `job-name` (the bridge only auto-injects `managed-by`,
-        // and tests / hand-rolled submissions may omit `job-name` on the
-        // pod template), look up the parent Job and read its label.
+        // - Non-Job-owned managed pods (Deployment / ReplicaSet /
+        //   KEDA-driven): each k8s Pod is its own single-replica
+        //   SolverPod, keyed by k8s pod name.  The `job-name` label is
+        //   *not* unique across replicas — a Deployment stamps the same
+        //   label on every replica's pod template — so using it would
+        //   collapse N pending pods into one group and silently drop
+        //   N-1 placements at the zip below.
         let mut by_workload: HashMap<String, Vec<Arc<Pod>>> = HashMap::new();
         for pod in unbound.drain(..) {
-            let from_pod_label = pod.labels().get(&config.job_name_label).cloned();
-            let wl_name = match from_pod_label {
-                Some(name) => name,
-                None => {
-                    let job_uid = pod
-                        .metadata
-                        .owner_references
-                        .as_ref()
-                        .and_then(|refs| refs.iter().find(|r| r.kind == "Job"))
-                        .map(|r| r.uid.as_str())
-                        .unwrap_or("");
-                    if job_uid.is_empty() {
-                        // Not Job-owned and no label — use pod name as
-                        // last resort; placement_shadow lookup
-                        // will likely miss but we tried.
-                        pod.name_any()
-                    } else {
+            let job_uid = pod
+                .metadata
+                .owner_references
+                .as_ref()
+                .and_then(|refs| refs.iter().find(|r| r.kind == "Job"))
+                .map(|r| r.uid.as_str())
+                .unwrap_or("");
+            let wl_name = if job_uid.is_empty() {
+                // Non-Job-owned: SolverPod key == k8s pod name.
+                pod.name_any()
+            } else {
+                // Job-owned: SolverPod key == parent Job's `job-name` label.
+                let from_pod_label = pod.labels().get(&config.job_name_label).cloned();
+                match from_pod_label {
+                    Some(name) => name,
+                    None => {
                         let parent = job_reader
                             .state()
                             .iter()

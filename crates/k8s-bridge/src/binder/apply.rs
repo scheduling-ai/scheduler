@@ -206,10 +206,11 @@ async fn apply_suspension(
                 if owned_by_job {
                     return false;
                 }
-                p.labels()
-                    .get(&ctx.config.job_name_label)
-                    .map(|n| n == wl_name)
-                    .unwrap_or_else(|| p.name_any() == wl_name)
+                // SolverPod key for non-Job-owned managed pods is the
+                // k8s pod name (see solver_request.rs's standalone-Pod
+                // loop).  The `job-name` label is shared across replicas
+                // of a Deployment and would mis-target.
+                p.name_any() == wl_name
             })
             .cloned();
 

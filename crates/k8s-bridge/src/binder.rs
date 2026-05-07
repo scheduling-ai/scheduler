@@ -1576,6 +1576,94 @@ mod tests {
         );
     }
 
+    /// Multi-replica Deployment: every replica's pod template carries the
+    /// same `job-name` label (the ReplicaSet stamps it).  Each k8s Pod must
+    /// still appear as its own SolverPod, keyed by k8s pod name — otherwise
+    /// the solver under-counts demand and treats the "missing" replicas'
+    /// nodes as free.
+    #[test]
+    fn deployment_replicas_each_become_their_own_solver_pod() {
+        let config = BinderConfig::default();
+
+        // Three managed standalone Pods (no Job owner_reference) all
+        // sharing the same `job-name` label, simulating a Deployment
+        // scaled to 3 replicas.
+        let make_replica = |name: &str, node: Option<&str>| Pod {
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                labels: Some(
+                    [
+                        (config.job_name_label.clone(), "serve-flagship".to_string()),
+                        (
+                            config.managed_by_label.clone(),
+                            config.managed_by_value.clone(),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+                annotations: Some(
+                    [
+                        (config.priority_annotation.clone(), "80".to_string()),
+                        (config.quota_annotation.clone(), "default".to_string()),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+                ..Default::default()
+            },
+            spec: Some(PodSpec {
+                node_name: node.map(str::to_string),
+                ..Default::default()
+            }),
+            status: Some(PodStatus {
+                phase: Some(if node.is_some() { "Running" } else { "Pending" }.to_string()),
+                ..Default::default()
+            }),
+        };
+
+        let pods_in_store = vec![
+            make_replica("serve-flagship-abc-aa1", Some("node-1")),
+            make_replica("serve-flagship-abc-bb2", Some("node-2")),
+            make_replica("serve-flagship-abc-cc3", None),
+        ];
+
+        let (_cl, pods) = build_cluster_state(
+            &empty_node_store(),
+            &make_pod_store(pods_in_store),
+            &make_job_store(vec![]),
+            "cluster-a",
+            &config,
+            &mut HashMap::new(),
+        );
+
+        assert_eq!(
+            pods.len(),
+            3,
+            "each Deployment replica must produce its own SolverPod (got {})",
+            pods.len()
+        );
+        assert!(pods.contains_key("serve-flagship-abc-aa1"));
+        assert!(pods.contains_key("serve-flagship-abc-bb2"));
+        assert!(pods.contains_key("serve-flagship-abc-cc3"));
+
+        // Bound replicas carry their node; the unbound one has cluster=None
+        // so the solver's admission step picks a node.
+        assert_eq!(
+            pods["serve-flagship-abc-aa1"].statuses_by_replica[0]
+                .node
+                .as_deref(),
+            Some("node-1")
+        );
+        assert_eq!(
+            pods["serve-flagship-abc-bb2"].statuses_by_replica[0]
+                .node
+                .as_deref(),
+            Some("node-2")
+        );
+        assert!(pods["serve-flagship-abc-cc3"].cluster.is_none());
+    }
+
     /// Binding API — unbound pod does not clear pending entry.
     ///
     /// With the Binding API, pods are created without a node and bound via a
