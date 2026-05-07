@@ -204,9 +204,17 @@ async fn init_cluster(
 ) -> Result<ClusterRuntime> {
     let client = client_for_context(context).await?;
 
-    let nodes_healthy = Arc::new(AtomicBool::new(true));
-    let pods_healthy = Arc::new(AtomicBool::new(true));
-    let jobs_healthy = Arc::new(AtomicBool::new(true));
+    // Start unhealthy: the binder skips scheduling cycles until each
+    // reflector emits an `InitDone` event (i.e. its initial LIST is
+    // complete and the kube client has actually round-tripped to the
+    // cluster API server).  Without this gate the binder loop runs
+    // before the kube client is warm — the very first non-watch RPC
+    // (`jobs_api.create`) was observed taking up to 4m43s on a freshly
+    // created kind cluster (CircleCI pipeline #42), stalling the whole
+    // binder loop and timing out e2e tests.
+    let nodes_healthy = Arc::new(AtomicBool::new(false));
+    let pods_healthy = Arc::new(AtomicBool::new(false));
+    let jobs_healthy = Arc::new(AtomicBool::new(false));
 
     // Node reflector with auto-recovery.
     let node_writer = reflector::store::Writer::default();
@@ -308,16 +316,31 @@ async fn run_reflector_with_retry<K, W, F>(
     let mut backoff = Duration::from_secs(1);
 
     // First run uses the pre-built writer (reader already installed).
+    // Healthy is gated on InitDone — the watcher emits this once the
+    // initial LIST has been replayed into the store, which is also when
+    // we can be confident the kube client has actually reached the API
+    // server.  Until then the binder skips scheduling cycles.
     let stream = reflector::reflector(initial_writer, make_watcher());
     let mut stream = std::pin::pin!(stream);
+    let mut saw_init_done = false;
     while let Some(item) = stream.next().await {
         backoff = Duration::from_secs(1);
-        if let Err(e) = item {
-            warn!(
+        match &item {
+            Ok(watcher::Event::InitDone) if !saw_init_done => {
+                saw_init_done = true;
+                healthy.store(true, Ordering::Release);
+                info!(
+                    cluster = %cluster,
+                    resource,
+                    "reflector ready (initial list complete)"
+                );
+            }
+            Err(e) => warn!(
                 cluster = %cluster,
                 resource,
                 "reflector transient error (watcher will re-list): {e}"
-            );
+            ),
+            _ => {}
         }
     }
 
@@ -340,25 +363,28 @@ async fn run_reflector_with_retry<K, W, F>(
         let stream = reflector::reflector(writer, make_watcher());
         let mut stream = std::pin::pin!(stream);
 
-        // Wait for the first successful event before marking healthy.
-        let mut saw_ok = false;
+        // Wait for InitDone before marking healthy: the re-listed store
+        // is empty until the LIST replays, so any earlier "Apply" event
+        // would have us scheduling against a partial view.
+        let mut saw_init_done = false;
         while let Some(item) = stream.next().await {
-            if item.is_ok() && !saw_ok {
-                saw_ok = true;
-                healthy.store(true, Ordering::Release);
-                info!(
-                    cluster = %cluster,
-                    resource,
-                    "reflector recovered"
-                );
-                backoff = Duration::from_secs(1);
-            }
-            if let Err(e) = item {
-                warn!(
+            match &item {
+                Ok(watcher::Event::InitDone) if !saw_init_done => {
+                    saw_init_done = true;
+                    healthy.store(true, Ordering::Release);
+                    info!(
+                        cluster = %cluster,
+                        resource,
+                        "reflector recovered"
+                    );
+                    backoff = Duration::from_secs(1);
+                }
+                Err(e) => warn!(
                     cluster = %cluster,
                     resource,
                     "reflector transient error (watcher will re-list): {e}"
-                );
+                ),
+                _ => {}
             }
         }
     }

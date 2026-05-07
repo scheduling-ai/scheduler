@@ -7,6 +7,7 @@
 //! gets the workload onto the cluster.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use k8s_openapi::api::batch::v1::Job as K8sJob;
@@ -22,6 +23,39 @@ use crate::job_store::{ManagedObject, RemoveOutcome, Workload, WorkloadStore};
 
 use super::BinderConfig;
 use super::diff::ScheduleDiff;
+
+/// Per-RPC timeout for kube API calls in the apply / bind paths.
+///
+/// kube-rs has no client-side timeout by default, so without this the
+/// binder loop can stall indefinitely on a single hung RPC (e.g. a
+/// freshly-spun-up kind cluster API server taking minutes to respond on
+/// the very first non-watch request — see CircleCI pipeline #42).  On
+/// timeout we surface an error; the caller logs+continues and the
+/// workload is retried next cycle (the store entry is only removed
+/// after a successful create).
+pub(super) const RPC_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Run a kube RPC with [`RPC_TIMEOUT`] and elapsed-time tracking.
+///
+/// Returns `(outcome, rpc_ms)` so callers can surface timing on both
+/// success and failure paths — granular per-RPC timing was missing from
+/// the previous diagnostics, which only logged the aggregate `apply_ms`
+/// for the whole cycle.
+pub(super) async fn timed_rpc<F, T>(fut: F) -> (Result<T>, u64)
+where
+    F: std::future::Future<Output = std::result::Result<T, kube::Error>>,
+{
+    let started = std::time::Instant::now();
+    let outcome = match tokio::time::timeout(RPC_TIMEOUT, fut).await {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(e)) => Err(anyhow::Error::from(e)),
+        Err(_) => Err(anyhow::anyhow!(
+            "kube RPC timed out after {}s",
+            RPC_TIMEOUT.as_secs()
+        )),
+    };
+    (outcome, started.elapsed().as_millis() as u64)
+}
 
 /// Everything needed by [`apply_assignments_multi`].
 pub(super) struct ApplyContext {
@@ -64,7 +98,7 @@ pub(super) async fn apply_assignments_multi(diff: &ScheduleDiff, ctx: &ApplyCont
                     "would create workload on cluster"
                 );
             } else {
-                let result = match &workload.managed {
+                let (result, rpc_ms) = match &workload.managed {
                     ManagedObject::Job(job) => create_k8s_job(job, client, &ctx.config).await,
                     ManagedObject::Pod(pod) => {
                         let node_name = node_counts.keys().next().map(String::as_str).unwrap_or("");
@@ -76,6 +110,7 @@ pub(super) async fn apply_assignments_multi(diff: &ScheduleDiff, ctx: &ApplyCont
                         info!(
                             workload = pod_name,
                             cluster = cluster_name,
+                            rpc_ms,
                             "created workload on cluster"
                         );
                     }
@@ -83,6 +118,7 @@ pub(super) async fn apply_assignments_multi(diff: &ScheduleDiff, ctx: &ApplyCont
                         warn!(
                             workload = pod_name,
                             cluster = cluster_name,
+                            rpc_ms,
                             "failed to create workload: {e}"
                         );
                         continue;
@@ -165,14 +201,17 @@ async fn apply_suspension(
             let patch = serde_json::json!({
                 "spec": { "suspend": true }
             });
-            match jobs_api
-                .patch(&k8s_name, &PatchParams::default(), &Patch::Merge(patch))
-                .await
-            {
-                Ok(_) => info!(cluster = cluster_owned, "suspended job {ns}/{k8s_name}"),
+            let (result, rpc_ms) =
+                timed_rpc(jobs_api.patch(&k8s_name, &PatchParams::default(), &Patch::Merge(patch)))
+                    .await;
+            match result {
+                Ok(_) => info!(
+                    cluster = cluster_owned,
+                    rpc_ms, "suspended job {ns}/{k8s_name}"
+                ),
                 Err(e) => warn!(
                     cluster = cluster_owned,
-                    "failed to suspend job {ns}/{k8s_name}: {e}"
+                    rpc_ms, "failed to suspend job {ns}/{k8s_name}: {e}"
                 ),
             }
         });
@@ -225,14 +264,16 @@ async fn apply_suspension(
 
         join_set.spawn(async move {
             let pods_api: Api<Pod> = Api::namespaced(client, &ns);
-            match pods_api.delete(&k8s_name, &DeleteParams::default()).await {
+            let (result, rpc_ms) =
+                timed_rpc(pods_api.delete(&k8s_name, &DeleteParams::default())).await;
+            match result {
                 Ok(_) => info!(
                     cluster = cluster_owned,
-                    "suspended (deleted) pod {ns}/{k8s_name}"
+                    rpc_ms, "suspended (deleted) pod {ns}/{k8s_name}"
                 ),
                 Err(e) => warn!(
                     cluster = cluster_owned,
-                    "failed to delete pod {ns}/{k8s_name} for suspension: {e}"
+                    rpc_ms, "failed to delete pod {ns}/{k8s_name} for suspension: {e}"
                 ),
             }
         });
@@ -285,14 +326,17 @@ async fn apply_unsuspension(
         join_set.spawn(async move {
             let jobs_api: Api<K8sJob> = Api::namespaced(client, &ns);
             let patch = serde_json::json!({ "spec": { "suspend": false } });
-            match jobs_api
-                .patch(&k8s_name, &PatchParams::default(), &Patch::Merge(patch))
-                .await
-            {
-                Ok(_) => info!(cluster = cluster_owned, "unsuspended job {ns}/{k8s_name}"),
+            let (result, rpc_ms) =
+                timed_rpc(jobs_api.patch(&k8s_name, &PatchParams::default(), &Patch::Merge(patch)))
+                    .await;
+            match result {
+                Ok(_) => info!(
+                    cluster = cluster_owned,
+                    rpc_ms, "unsuspended job {ns}/{k8s_name}"
+                ),
                 Err(e) => warn!(
                     cluster = cluster_owned,
-                    "failed to unsuspend job {ns}/{k8s_name}: {e}"
+                    rpc_ms, "failed to unsuspend job {ns}/{k8s_name}: {e}"
                 ),
             }
         });
@@ -310,7 +354,7 @@ async fn create_k8s_job(
     submitted_job: &K8sJob,
     client: &Client,
     config: &BinderConfig,
-) -> Result<()> {
+) -> (Result<()>, u64) {
     let ns = submitted_job
         .metadata
         .namespace
@@ -348,12 +392,13 @@ async fn create_k8s_job(
         spec.suspend = Some(false);
     }
 
-    jobs_api
-        .create(&PostParams::default(), &job)
-        .await
-        .context("failed to create Job on cluster")?;
-
-    Ok(())
+    let (result, rpc_ms) = timed_rpc(jobs_api.create(&PostParams::default(), &job)).await;
+    (
+        result
+            .map(|_| ())
+            .context("failed to create Job on cluster"),
+        rpc_ms,
+    )
 }
 
 /// Create a standalone v1 Pod on the target cluster.
@@ -366,7 +411,7 @@ async fn create_k8s_pod(
     client: &Client,
     node_name: &str,
     config: &BinderConfig,
-) -> Result<()> {
+) -> (Result<()>, u64) {
     let ns = submitted_pod
         .metadata
         .namespace
@@ -390,10 +435,11 @@ async fn create_k8s_pod(
     let pod_spec = pod.spec.get_or_insert_with(Default::default);
     pod_spec.node_name = Some(node_name.to_owned());
 
-    pods_api
-        .create(&PostParams::default(), &pod)
-        .await
-        .context("failed to create Pod on cluster")?;
-
-    Ok(())
+    let (result, rpc_ms) = timed_rpc(pods_api.create(&PostParams::default(), &pod)).await;
+    (
+        result
+            .map(|_| ())
+            .context("failed to create Pod on cluster"),
+        rpc_ms,
+    )
 }

@@ -14,6 +14,7 @@ use k8s_openapi::api::core::v1::{Binding, ObjectReference, Pod};
 use kube::{Api, Client, ResourceExt, api::PostParams};
 use tracing::{info, warn};
 
+use super::apply::timed_rpc;
 use super::{BinderConfig, ClusterRuntime, PlacementShadow};
 
 /// Bind a Pending pod to a specific node via the k8s Binding API.
@@ -26,7 +27,7 @@ pub(super) async fn bind_pod(
     ns: &str,
     pod_name: &str,
     node_name: &str,
-) -> Result<()> {
+) -> (Result<()>, u64) {
     let binding = Binding {
         metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
             name: Some(pod_name.to_owned()),
@@ -40,16 +41,17 @@ pub(super) async fn bind_pod(
         },
     };
     let pods_api: Api<Pod> = Api::namespaced(client.clone(), ns);
-    pods_api
-        .create_subresource::<Binding, serde_json::Value>(
-            "binding",
-            pod_name,
-            &PostParams::default(),
-            &binding,
-        )
-        .await
-        .context("failed to bind pod to node")?;
-    Ok(())
+    let (result, rpc_ms) = timed_rpc(pods_api.create_subresource::<Binding, serde_json::Value>(
+        "binding",
+        pod_name,
+        &PostParams::default(),
+        &binding,
+    ))
+    .await;
+    (
+        result.map(|_| ()).context("failed to bind pod to node"),
+        rpc_ms,
+    )
 }
 
 /// Bind any Pending pods that have our `schedulerName` and no `nodeName` yet.
@@ -173,17 +175,20 @@ pub(super) async fn bind_pending_pods(
                 let wl = wl_name.clone();
 
                 tokio::spawn(async move {
-                    match bind_pod(&client, &ns, &pod_name, &node_name).await {
+                    let (result, rpc_ms) = bind_pod(&client, &ns, &pod_name, &node_name).await;
+                    match result {
                         Ok(()) => info!(
                             workload = wl,
                             pod = pod_name,
                             node = node_name,
+                            rpc_ms,
                             "bound pod to node"
                         ),
                         Err(e) => warn!(
                             workload = wl,
                             pod = pod_name,
                             node = node_name,
+                            rpc_ms,
                             "bind failed: {e}"
                         ),
                     }
