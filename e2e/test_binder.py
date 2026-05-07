@@ -203,6 +203,114 @@ def test_unmanaged_objects_ignored(scheduler, k8s_clients):
         batch.delete_namespaced_job("manual-job", "default")
 
 
+def test_kubectl_applied_suspended_job_unsuspends_and_pod_binds(scheduler, k8s_clients):
+    """Managed Job created directly on the cluster (mimicking `kubectl apply`,
+    bypassing the bridge's HTTP API) is observed via the reflector,
+    unsuspended by the next solver tick, and its pod is bound to a node.
+
+    This is the rollout path: existing systems can drop in the bridge
+    without rewriting submission tooling, as long as the manifest carries
+    the managed-by label, spec.suspend: true, and schedulerName.
+    """
+    from kubernetes.client import (
+        V1Container,
+        V1Job,
+        V1JobSpec,
+        V1ObjectMeta,
+        V1PodSpec,
+        V1PodTemplateSpec,
+        V1ResourceRequirements,
+        V1Toleration,
+    )
+
+    from conftest import (
+        CHIP_RESOURCE,
+        CHIPS_PER_NODE,
+        JOB_NAME_LABEL,
+        MANAGED_BY_LABEL,
+        MANAGED_BY_VALUE,
+    )
+
+    name = "kubectl-applied-job"
+    batch = k8s_clients["cluster-a"]["batch"]
+
+    job = V1Job(
+        api_version="batch/v1",
+        kind="Job",
+        metadata=V1ObjectMeta(
+            name=name,
+            labels={
+                "accelerator": "h100",
+                MANAGED_BY_LABEL: MANAGED_BY_VALUE,
+                JOB_NAME_LABEL: name,
+            },
+            annotations={
+                "scheduler.example.com/priority": "5",
+                "scheduler.example.com/quota": "team-train",
+            },
+        ),
+        spec=V1JobSpec(
+            suspend=True,
+            parallelism=1,
+            completions=1,
+            template=V1PodTemplateSpec(
+                metadata=V1ObjectMeta(
+                    labels={
+                        MANAGED_BY_LABEL: MANAGED_BY_VALUE,
+                        JOB_NAME_LABEL: name,
+                    },
+                ),
+                spec=V1PodSpec(
+                    scheduler_name="custom-scheduler",
+                    tolerations=[
+                        V1Toleration(
+                            key="scheduler",
+                            operator="Equal",
+                            value="custom",
+                            effect="NoSchedule",
+                        )
+                    ],
+                    containers=[
+                        V1Container(
+                            name="test",
+                            image="busybox:1.36",
+                            command=["sleep", "3600"],
+                            resources=V1ResourceRequirements(
+                                requests={CHIP_RESOURCE: str(CHIPS_PER_NODE)},
+                                limits={CHIP_RESOURCE: str(CHIPS_PER_NODE)},
+                            ),
+                        )
+                    ],
+                    restart_policy="Never",
+                ),
+            ),
+        ),
+    )
+
+    batch.create_namespaced_job("default", job)
+    try:
+        # Bridge must observe the suspended Job and unsuspend it.
+        def unsuspended():
+            j = get_job_by_name(k8s_clients, "cluster-a", name)
+            return j is not None and j.spec.suspend is False
+
+        wait_for(unsuspended, desc="bridge unsuspends kubectl-applied Job")
+
+        # And the resulting pod must be bound to a node by the bridge's
+        # binder (kube-scheduler ignores it because of schedulerName).
+        def pod_bound():
+            pods = get_pods_on_cluster(k8s_clients, "cluster-a")
+            for pod in pods:
+                refs = pod.metadata.owner_references or []
+                if any(r.name == name for r in refs):
+                    return pod.spec.node_name is not None
+            return False
+
+        wait_for(pod_bound, desc="bridge binds pod for kubectl-applied Job")
+    finally:
+        delete_k8s_workload(k8s_clients, name)
+
+
 # ---------------------------------------------------------------------------
 # Multi-cluster routing
 # ---------------------------------------------------------------------------
