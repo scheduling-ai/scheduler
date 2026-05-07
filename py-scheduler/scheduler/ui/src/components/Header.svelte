@@ -83,6 +83,15 @@
           sim.handleSliderInput(Number((e.target as HTMLInputElement).value))}
       />
       <div class="frame-counter">{counterText}</div>
+      {#if sim.currentMode === "replay" && sim.replayRunSolver}
+        <button
+          class="btn-icon"
+          disabled={!sim.frames.length || sim.frameBusy}
+          aria-label="Re-solve current frame"
+          title="Re-solve current frame (drops the cached result and re-runs the solver — useful when debugging /api/solve)"
+          onclick={() => sim.resolveCurrentFrame()}>&#x21bb;</button
+        >
+      {/if}
     </div>
 
     <div class="meta">

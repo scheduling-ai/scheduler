@@ -117,6 +117,20 @@ class SimState {
     this.selectedGangIdx = null;
   }
 
+  // Frame whose pod state matches what the user actually sees at index `i`.
+  // In live mode that's just `frames[i]` (already post-solver). In replay /
+  // scenario mode the displayed state is `solvedFrames[i-1]` overlaid on the
+  // raw input, so we reconstruct it via buildWorldState; iteration must stop
+  // at the first index whose previous solve isn't cached, otherwise we'd be
+  // reading the raw pre-solver pods (no nodes) and emitting fake "pending"
+  // events.
+  private historyFrameAt(i: number): Frame | null {
+    if (this.currentMode === "live") return this.frames[i] ?? null;
+    if (i === 0) return this.frames[0] ?? null;
+    if (!this.solvedFrames[i - 1]) return null;
+    return this.buildWorldState(i);
+  }
+
   jobHistory(jobName: string): {
     frame: number;
     seq: number | null;
@@ -137,7 +151,8 @@ class SimState {
     let lastStatus = "";
     let everSeen = false;
     for (let i = 0; i < this.frames.length; i++) {
-      const f = this.frames[i];
+      const f = this.historyFrameAt(i);
+      if (!f) break;
       const pod = f?.pods?.[jobName];
       let status = "absent";
       if (pod) {
@@ -192,7 +207,8 @@ class SimState {
     let lastKey = "";
     let everSeen = false;
     for (let i = 0; i < this.frames.length; i++) {
-      const f = this.frames[i];
+      const f = this.historyFrameAt(i);
+      if (!f) break;
       let running = 0;
       let total = 0;
       for (const [podName, pod] of Object.entries(f?.pods ?? {})) {
@@ -227,6 +243,19 @@ class SimState {
       }
     }
     return events;
+  }
+
+  // Drop the cached solve for the current frame and re-trigger it. Useful when
+  // attaching a Python debugger to /api/solve — without this you'd need to
+  // reload the whole scenario to re-run a specific frame's solve.
+  async resolveCurrentFrame() {
+    if (this.currentMode !== "replay" || !this.replayRunSolver) return;
+    if (!this.frames.length) return;
+    const idx = this.currentFrameIdx;
+    const next = { ...this.solvedFrames };
+    delete next[idx];
+    this.solvedFrames = next;
+    await this.requestFrame(idx);
   }
 
   showError(message: string) {
@@ -481,17 +510,35 @@ class SimState {
       this.syncRoute();
     }
   }
-  async solveFrame(frame: Frame) {
+  async solveFrame(frame: Frame, frameIdx: number) {
     const started = performance.now();
     const solver = encodeURIComponent(this.replaySolver.trim());
-    const solved = await fetchJson(`/api/solve?solver=${solver}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(frame),
-    });
-    if (typeof solved.solver_duration_ms !== "number")
-      solved.solver_duration_ms = Math.round(performance.now() - started);
-    return solved;
+    try {
+      const solved = await fetchJson(`/api/solve?solver=${solver}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(frame),
+      });
+      if (typeof solved.solver_duration_ms !== "number")
+        solved.solver_duration_ms = Math.round(performance.now() - started);
+      const placed = Object.values(
+        (solved.pods ?? {}) as Record<
+          string,
+          { statuses_by_replica?: { node?: string }[] }
+        >,
+      ).reduce(
+        (n, p) =>
+          n + (p.statuses_by_replica ?? []).filter((r) => r.node).length,
+        0,
+      );
+      console.log(
+        `[solve] frame=${frameIdx} solver=${this.replaySolver} status=${solved.solver_status ?? "ok"} duration=${solved.solver_duration_ms}ms placed=${placed}`,
+      );
+      return solved;
+    } catch (error: any) {
+      console.error(`[solve] frame=${frameIdx} failed:`, error);
+      throw error;
+    }
   }
   buildWorldState(index: number): Frame {
     const raw = this.frames[index];
@@ -507,7 +554,7 @@ class SimState {
       if (requestId !== this.frameRequestId) return false;
       if (this.solvedFrames[i]) continue;
       const world = this.buildWorldState(i);
-      const solved = await this.solveFrame(world);
+      const solved = await this.solveFrame(world, i);
       if (requestId !== this.frameRequestId) return false;
       this.solvedFrames[i] = {
         ...world,
@@ -574,7 +621,7 @@ class SimState {
       world = this.buildWorldState(this.currentFrameIdx);
       if (requestId !== this.frameRequestId) return;
       this.displayFrame = world;
-      const solved = await this.solveFrame(world);
+      const solved = await this.solveFrame(world, this.currentFrameIdx);
       if (requestId !== this.frameRequestId) return;
       this.solvedFrames[this.currentFrameIdx] = {
         ...world,
@@ -585,7 +632,7 @@ class SimState {
       this.solvedFrames = { ...this.solvedFrames };
     } catch (error: any) {
       if (requestId !== this.frameRequestId) return;
-      this.showError(error.message);
+      this.showError(`Frame ${this.currentFrameIdx}: ${error.message}`);
     }
     this.syncRoute();
   }
