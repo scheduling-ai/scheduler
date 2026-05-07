@@ -1206,7 +1206,7 @@ mod tests {
     //   corrupting capacity accounting for the cycle.
 
     use k8s_openapi::api::batch::v1::JobSpec;
-    use k8s_openapi::api::core::v1::{PodSpec, PodStatus};
+    use k8s_openapi::api::core::v1::{PodSpec, PodStatus, PodTemplateSpec};
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 
     fn make_job_store(jobs: Vec<K8sJob>) -> reflector::Store<K8sJob> {
@@ -1229,7 +1229,9 @@ mod tests {
         reflector::store::Writer::<Node>::default().as_reader()
     }
 
-    /// A minimal K8sJob with the labels build_cluster_state expects.
+    /// A minimal K8sJob with the labels build_cluster_state expects, and
+    /// the right schedulerName on the pod template (so build_cluster_state
+    /// doesn't emit the bypass-warning during tests).
     fn test_job(uid: &str, suspend: bool, parallelism: i32, config: &BinderConfig) -> K8sJob {
         K8sJob {
             metadata: ObjectMeta {
@@ -1251,6 +1253,13 @@ mod tests {
             spec: Some(JobSpec {
                 suspend: Some(suspend),
                 parallelism: Some(parallelism),
+                template: PodTemplateSpec {
+                    spec: Some(PodSpec {
+                        scheduler_name: Some(config.scheduler_name.clone()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
                 ..Default::default()
             }),
             ..Default::default()
@@ -1488,6 +1497,13 @@ mod tests {
             spec: Some(JobSpec {
                 suspend: Some(true),
                 parallelism: Some(1),
+                template: PodTemplateSpec {
+                    spec: Some(PodSpec {
+                        scheduler_name: Some(config.scheduler_name.clone()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
                 ..Default::default()
             }),
             ..Default::default()
@@ -1514,6 +1530,13 @@ mod tests {
             spec: Some(JobSpec {
                 suspend: Some(false),
                 parallelism: Some(1),
+                template: PodTemplateSpec {
+                    spec: Some(PodSpec {
+                        scheduler_name: Some(config.scheduler_name.clone()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
                 ..Default::default()
             }),
             ..Default::default()
@@ -1996,6 +2019,118 @@ mod tests {
         assert!(
             wl.consecutive_failures < job_store::BACKOFF_THRESHOLD,
             "workload should no longer be in backoff after reset"
+        );
+    }
+
+    /// End-to-end: a kubectl-applied managed Job with `spec.suspend=true` is
+    /// observed by the Job reflector, surfaces in the SolverRequest as
+    /// `Phase::Suspended` pinned to its origin cluster, and — when the
+    /// solver places it — the diff routes it to `unsuspend` (patch existing
+    /// Job) rather than `assign` (create on cluster).
+    ///
+    /// The distinction matters: `assign` would call `create_k8s_job`,
+    /// which 409s because the Job already exists. `unsuspend` patches
+    /// `spec.suspend=false` on the live object, which is what we want.
+    /// This is the path users get when they `kubectl apply -f job.yaml`
+    /// instead of POSTing to the bridge's HTTP API.
+    #[test]
+    fn kubectl_applied_suspended_job_routes_to_unsuspend_not_assign() {
+        let config = BinderConfig::default();
+
+        // What a user's manifest must contain: managed-by + job-name labels,
+        // suspend=true. (Quota annotation is optional given default config
+        // has no known-quota allowlist.)
+        let job = test_job("uid-applied", true, 1, &config);
+
+        // Read side: the reflector path produces the SolverRequest pod.
+        let mut shadow = HashMap::new();
+        let (cluster, request_pods) = build_cluster_state(
+            &empty_node_store(),
+            &make_pod_store(vec![]),
+            &make_job_store(vec![job]),
+            "cluster-a",
+            &config,
+            &mut shadow,
+        );
+
+        let request_pod = request_pods
+            .get("wl-1")
+            .expect("kubectl-applied Job must surface in the SolverRequest");
+        assert_eq!(
+            request_pod.cluster.as_deref(),
+            Some("cluster-a"),
+            "Job must be pinned to the cluster it was applied to"
+        );
+        assert!(
+            request_pod
+                .statuses_by_replica
+                .iter()
+                .all(|s| s.phase == Phase::Suspended),
+            "suspended Job must reach the solver as Phase::Suspended"
+        );
+
+        // Solver places the Job on node-0.
+        let request = SolverRequest {
+            clusters: vec![cluster],
+            pods: request_pods,
+            gang_sets: vec![],
+            quotas: vec![],
+            time_limit: 10.0,
+        };
+        let placed_pod = SolverPod {
+            cluster: Some("cluster-a".into()),
+            statuses_by_replica: vec![SolverReplicaStatus {
+                phase: Phase::Running,
+                node: Some("node-0".into()),
+            }],
+            ..request.pods["wl-1"].clone()
+        };
+        let result = result_with(vec![("wl-1", placed_pod)]);
+
+        let diff = diff_schedule(&request, &result);
+
+        assert!(
+            diff.unsuspend.contains_key("wl-1"),
+            "kubectl-applied Job must be routed to unsuspend (patch existing)"
+        );
+        assert!(
+            !diff.assign.contains_key("wl-1"),
+            "Job already lives on the cluster — must not be re-created via assign"
+        );
+    }
+
+    /// A managed Job whose pod template has the *wrong* schedulerName means
+    /// kube-scheduler is binding its pods, bypassing the bridge.  We can't
+    /// fix that for the operator, but we must not silently swallow the Job
+    /// either: it still has to surface in the SolverRequest so capacity
+    /// accounting stays correct.  (The warning itself is logged via the
+    /// `tracing` crate; we don't assert on log output.)
+    #[test]
+    fn job_with_wrong_scheduler_name_still_appears_in_solver_request() {
+        let config = BinderConfig::default();
+        let mut job = test_job("uid-bypass", true, 1, &config);
+        // Strip the schedulerName the helper sets, so this Job looks
+        // like one a user shipped without our schedulerName.
+        if let Some(spec) = job.spec.as_mut()
+            && let Some(pod_spec) = spec.template.spec.as_mut()
+        {
+            pod_spec.scheduler_name = None;
+        }
+
+        let (_cl, pods) = build_cluster_state(
+            &empty_node_store(),
+            &make_pod_store(vec![]),
+            &make_job_store(vec![job]),
+            "cluster-a",
+            &config,
+            &mut HashMap::new(),
+        );
+
+        assert!(
+            pods.contains_key("wl-1"),
+            "Job must still surface in the SolverRequest so its capacity \
+             usage is accounted for, even when kube-scheduler is binding \
+             its pods"
         );
     }
 }

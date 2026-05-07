@@ -183,6 +183,25 @@ pub(super) fn build_cluster_state(
             continue;
         }
 
+        // Footgun for kubectl-applied Jobs: if the pod template's
+        // schedulerName isn't ours, kube-scheduler will bind the pods and
+        // bypass our binder entirely. Warn so the operator notices.
+        // Mirrors the per-tick warn pattern of the unknown-quota check
+        // above; stops as soon as the manifest is fixed.
+        let template_scheduler = job
+            .spec
+            .as_ref()
+            .and_then(|s| s.template.spec.as_ref())
+            .and_then(|p| p.scheduler_name.as_deref());
+        if template_scheduler != Some(config.scheduler_name.as_str()) {
+            warn!(
+                workload = %job_name,
+                expected = %config.scheduler_name,
+                actual = ?template_scheduler,
+                "managed Job's pod template has wrong schedulerName; kube-scheduler will bind its pods, bypassing this scheduler"
+            );
+        }
+
         let is_suspended = job.spec.as_ref().and_then(|s| s.suspend).unwrap_or(false);
 
         // Three placement states for an active Job's pods, in priority order:

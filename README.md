@@ -109,6 +109,12 @@ DATABASE_URL=postgres://scheduler:scheduler@localhost:5432/scheduler \
 curl -X POST http://localhost:8080/jobs -H 'Content-Type: application/json' \
   -d "$(yq -o=json deploy/test-job.yaml)"
 curl http://localhost:8080/status
+
+# Or, for easier rollout in existing systems, submit directly with kubectl —
+# the bridge picks up suspended Jobs that carry the managed-by label via
+# its cluster reflector. See deploy/test-job-kubectl.yaml for the required
+# manifest shape (managed-by label, spec.suspend: true, schedulerName).
+kubectl apply -f deploy/test-job-kubectl.yaml
 ```
 
 ### Useful commands

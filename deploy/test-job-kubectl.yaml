@@ -1,0 +1,65 @@
+# Test Job submitted directly via `kubectl apply`, bypassing the bridge's HTTP API.
+#
+#   kubectl apply -f deploy/test-job-kubectl.yaml
+#
+# The bridge picks the Job up via its reflector (filtered on the
+# `scheduler.example.com/managed-by` label), holds it suspended, and the
+# next solver tick decides whether to unsuspend it onto a node.
+#
+# Required for the bridge to handle this Job correctly:
+#
+#   1. metadata.labels[scheduler.example.com/managed-by] = custom-scheduler
+#      -> reflector label selector matches.
+#   2. spec.suspend: true
+#      -> without this, kube-scheduler runs the Pods immediately,
+#         bypassing the bridge entirely.
+#   3. spec.template.spec.schedulerName: custom-scheduler
+#      -> without this, kube-scheduler races to bind the Pods once
+#         the Job is unsuspended (the bridge logs a warning if missing).
+#   4. spec.template.spec.tolerations for scheduler=custom:NoSchedule
+#      -> required to land on bridge-managed (tainted) nodes.
+#
+# Optional:
+#   - metadata.labels[scheduler.example.com/job-name]: SolverPod key for
+#     this workload. Falls back to metadata.name if absent.
+#   - metadata.annotations[scheduler.example.com/priority]: integer; default 0.
+#   - metadata.annotations[scheduler.example.com/quota]: quota name; default "default".
+#
+# This manifest mirrors the shape `create_k8s_job` would produce for an
+# HTTP-submitted Job (see crates/k8s-bridge/src/binder/apply.rs).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: test-gpu-job-kubectl
+  labels:
+    accelerator: h100
+    scheduler.example.com/managed-by: custom-scheduler
+    scheduler.example.com/job-name: test-gpu-job-kubectl
+  annotations:
+    scheduler.example.com/priority: "0"
+    scheduler.example.com/quota: "default"
+spec:
+  suspend: true
+  parallelism: 2
+  completions: 2
+  template:
+    metadata:
+      labels:
+        scheduler.example.com/managed-by: custom-scheduler
+        scheduler.example.com/job-name: test-gpu-job-kubectl
+    spec:
+      schedulerName: custom-scheduler
+      tolerations:
+        - key: scheduler
+          operator: Equal
+          value: custom
+          effect: NoSchedule
+      containers:
+        - name: busybox
+          image: busybox
+          command: ["sleep", "3600"]
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+      restartPolicy: Never
