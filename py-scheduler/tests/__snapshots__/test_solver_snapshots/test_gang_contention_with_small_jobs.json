@@ -1,0 +1,543 @@
+{
+  "pods": {
+    "big-train": {
+      "chip_type": "H200",
+      "chips_per_replica": 8,
+      "cluster": "us-east",
+      "priority": 2,
+      "quota": "training-large",
+      "statuses_by_replica": [
+        {
+          "node": null,
+          "phase": "suspended"
+        },
+        {
+          "node": null,
+          "phase": "suspended"
+        },
+        {
+          "node": null,
+          "phase": "suspended"
+        },
+        {
+          "node": null,
+          "phase": "suspended"
+        },
+        {
+          "node": null,
+          "phase": "suspended"
+        },
+        {
+          "node": null,
+          "phase": "suspended"
+        },
+        {
+          "node": null,
+          "phase": "suspended"
+        },
+        {
+          "node": null,
+          "phase": "suspended"
+        },
+        {
+          "node": null,
+          "phase": "suspended"
+        },
+        {
+          "node": null,
+          "phase": "suspended"
+        },
+        {
+          "node": null,
+          "phase": "suspended"
+        },
+        {
+          "node": null,
+          "phase": "suspended"
+        },
+        {
+          "node": null,
+          "phase": "suspended"
+        },
+        {
+          "node": null,
+          "phase": "suspended"
+        },
+        {
+          "node": null,
+          "phase": "suspended"
+        },
+        {
+          "node": null,
+          "phase": "suspended"
+        },
+        {
+          "node": null,
+          "phase": "suspended"
+        },
+        {
+          "node": null,
+          "phase": "suspended"
+        },
+        {
+          "node": null,
+          "phase": "suspended"
+        },
+        {
+          "node": null,
+          "phase": "suspended"
+        },
+        {
+          "node": null,
+          "phase": "suspended"
+        },
+        {
+          "node": null,
+          "phase": "suspended"
+        },
+        {
+          "node": null,
+          "phase": "suspended"
+        },
+        {
+          "node": null,
+          "phase": "suspended"
+        },
+        {
+          "node": null,
+          "phase": "suspended"
+        },
+        {
+          "node": null,
+          "phase": "suspended"
+        },
+        {
+          "node": null,
+          "phase": "suspended"
+        },
+        {
+          "node": null,
+          "phase": "suspended"
+        },
+        {
+          "node": null,
+          "phase": "suspended"
+        },
+        {
+          "node": null,
+          "phase": "suspended"
+        }
+      ]
+    },
+    "challenger": {
+      "chip_type": "H200",
+      "chips_per_replica": 8,
+      "cluster": "us-east",
+      "priority": 3,
+      "quota": "training-large",
+      "statuses_by_replica": [
+        {
+          "node": "use-h200-0000",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0001",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0002",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0003",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0004",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0005",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0006",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0007",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0008",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0009",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0010",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0011",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0012",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0013",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0014",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0015",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0016",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0017",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0018",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0019",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0020",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0021",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0022",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0023",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0024",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0025",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0026",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0027",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0028",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0029",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0031",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0032",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0034",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0037",
+          "phase": "running"
+        },
+        {
+          "node": "use-h200-0038",
+          "phase": "running"
+        }
+      ]
+    },
+    "small-0": {
+      "chip_type": "H200",
+      "chips_per_replica": 1,
+      "cluster": "us-east",
+      "priority": 5,
+      "quota": "platform-ci",
+      "statuses_by_replica": [
+        {
+          "node": "use-h200-0036",
+          "phase": "running"
+        }
+      ]
+    },
+    "small-1": {
+      "chip_type": "H200",
+      "chips_per_replica": 1,
+      "cluster": "us-east",
+      "priority": 5,
+      "quota": "platform-ci",
+      "statuses_by_replica": [
+        {
+          "node": "use-h200-0036",
+          "phase": "running"
+        }
+      ]
+    },
+    "small-10": {
+      "chip_type": "H200",
+      "chips_per_replica": 1,
+      "cluster": "us-east",
+      "priority": 5,
+      "quota": "platform-ci",
+      "statuses_by_replica": [
+        {
+          "node": "use-h200-0035",
+          "phase": "running"
+        }
+      ]
+    },
+    "small-11": {
+      "chip_type": "H200",
+      "chips_per_replica": 1,
+      "cluster": "us-east",
+      "priority": 5,
+      "quota": "platform-ci",
+      "statuses_by_replica": [
+        {
+          "node": "use-h200-0035",
+          "phase": "running"
+        }
+      ]
+    },
+    "small-12": {
+      "chip_type": "H200",
+      "chips_per_replica": 1,
+      "cluster": "us-east",
+      "priority": 5,
+      "quota": "platform-ci",
+      "statuses_by_replica": [
+        {
+          "node": "use-h200-0035",
+          "phase": "running"
+        }
+      ]
+    },
+    "small-13": {
+      "chip_type": "H200",
+      "chips_per_replica": 1,
+      "cluster": "us-east",
+      "priority": 5,
+      "quota": "platform-ci",
+      "statuses_by_replica": [
+        {
+          "node": "use-h200-0035",
+          "phase": "running"
+        }
+      ]
+    },
+    "small-14": {
+      "chip_type": "H200",
+      "chips_per_replica": 1,
+      "cluster": "us-east",
+      "priority": 5,
+      "quota": "platform-ci",
+      "statuses_by_replica": [
+        {
+          "node": "use-h200-0036",
+          "phase": "running"
+        }
+      ]
+    },
+    "small-15": {
+      "chip_type": "H200",
+      "chips_per_replica": 1,
+      "cluster": "us-east",
+      "priority": 5,
+      "quota": "platform-ci",
+      "statuses_by_replica": [
+        {
+          "node": "use-h200-0035",
+          "phase": "running"
+        }
+      ]
+    },
+    "small-16": {
+      "chip_type": "H200",
+      "chips_per_replica": 1,
+      "cluster": "us-east",
+      "priority": 5,
+      "quota": "platform-ci",
+      "statuses_by_replica": [
+        {
+          "node": "use-h200-0036",
+          "phase": "running"
+        }
+      ]
+    },
+    "small-17": {
+      "chip_type": "H200",
+      "chips_per_replica": 1,
+      "cluster": "us-east",
+      "priority": 5,
+      "quota": "platform-ci",
+      "statuses_by_replica": [
+        {
+          "node": "use-h200-0035",
+          "phase": "running"
+        }
+      ]
+    },
+    "small-18": {
+      "chip_type": "H200",
+      "chips_per_replica": 1,
+      "cluster": "us-east",
+      "priority": 5,
+      "quota": "platform-ci",
+      "statuses_by_replica": [
+        {
+          "node": "use-h200-0036",
+          "phase": "running"
+        }
+      ]
+    },
+    "small-19": {
+      "chip_type": "H200",
+      "chips_per_replica": 1,
+      "cluster": "us-east",
+      "priority": 5,
+      "quota": "platform-ci",
+      "statuses_by_replica": [
+        {
+          "node": "use-h200-0035",
+          "phase": "running"
+        }
+      ]
+    },
+    "small-2": {
+      "chip_type": "H200",
+      "chips_per_replica": 1,
+      "cluster": "us-east",
+      "priority": 5,
+      "quota": "platform-ci",
+      "statuses_by_replica": [
+        {
+          "node": "use-h200-0033",
+          "phase": "running"
+        }
+      ]
+    },
+    "small-3": {
+      "chip_type": "H200",
+      "chips_per_replica": 1,
+      "cluster": "us-east",
+      "priority": 5,
+      "quota": "platform-ci",
+      "statuses_by_replica": [
+        {
+          "node": "use-h200-0036",
+          "phase": "running"
+        }
+      ]
+    },
+    "small-4": {
+      "chip_type": "H200",
+      "chips_per_replica": 1,
+      "cluster": "us-east",
+      "priority": 5,
+      "quota": "platform-ci",
+      "statuses_by_replica": [
+        {
+          "node": "use-h200-0036",
+          "phase": "running"
+        }
+      ]
+    },
+    "small-5": {
+      "chip_type": "H200",
+      "chips_per_replica": 1,
+      "cluster": "us-east",
+      "priority": 5,
+      "quota": "platform-ci",
+      "statuses_by_replica": [
+        {
+          "node": "use-h200-0039",
+          "phase": "running"
+        }
+      ]
+    },
+    "small-6": {
+      "chip_type": "H200",
+      "chips_per_replica": 1,
+      "cluster": "us-east",
+      "priority": 5,
+      "quota": "platform-ci",
+      "statuses_by_replica": [
+        {
+          "node": "use-h200-0035",
+          "phase": "running"
+        }
+      ]
+    },
+    "small-7": {
+      "chip_type": "H200",
+      "chips_per_replica": 1,
+      "cluster": "us-east",
+      "priority": 5,
+      "quota": "platform-ci",
+      "statuses_by_replica": [
+        {
+          "node": "use-h200-0033",
+          "phase": "running"
+        }
+      ]
+    },
+    "small-8": {
+      "chip_type": "H200",
+      "chips_per_replica": 1,
+      "cluster": "us-east",
+      "priority": 5,
+      "quota": "platform-ci",
+      "statuses_by_replica": [
+        {
+          "node": "use-h200-0030",
+          "phase": "running"
+        }
+      ]
+    },
+    "small-9": {
+      "chip_type": "H200",
+      "chips_per_replica": 1,
+      "cluster": "us-east",
+      "priority": 5,
+      "quota": "platform-ci",
+      "statuses_by_replica": [
+        {
+          "node": "use-h200-0036",
+          "phase": "running"
+        }
+      ]
+    }
+  },
+  "solver_status": "ok/optimal"
+}

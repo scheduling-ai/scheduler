@@ -1,0 +1,341 @@
+{
+  "pods": {
+    "east-busy": {
+      "chip_type": "H100",
+      "chips_per_replica": 8,
+      "cluster": "us-east",
+      "priority": 5,
+      "quota": "research-vision",
+      "statuses_by_replica": [
+        {
+          "node": "use-h100-0000",
+          "phase": "running"
+        },
+        {
+          "node": "use-h100-0001",
+          "phase": "running"
+        },
+        {
+          "node": "use-h100-0002",
+          "phase": "running"
+        },
+        {
+          "node": "use-h100-0003",
+          "phase": "running"
+        },
+        {
+          "node": "use-h100-0004",
+          "phase": "running"
+        },
+        {
+          "node": "use-h100-0005",
+          "phase": "running"
+        },
+        {
+          "node": "use-h100-0006",
+          "phase": "running"
+        },
+        {
+          "node": "use-h100-0007",
+          "phase": "running"
+        },
+        {
+          "node": "use-h100-0008",
+          "phase": "running"
+        },
+        {
+          "node": "use-h100-0009",
+          "phase": "running"
+        },
+        {
+          "node": "use-h100-0010",
+          "phase": "running"
+        },
+        {
+          "node": "use-h100-0011",
+          "phase": "running"
+        }
+      ]
+    },
+    "eu-busy": {
+      "chip_type": "H100",
+      "chips_per_replica": 8,
+      "cluster": "eu-central",
+      "priority": 5,
+      "quota": "research-vision",
+      "statuses_by_replica": [
+        {
+          "node": "euc-h100-0000",
+          "phase": "running"
+        },
+        {
+          "node": "euc-h100-0001",
+          "phase": "running"
+        },
+        {
+          "node": "euc-h100-0002",
+          "phase": "running"
+        },
+        {
+          "node": "euc-h100-0003",
+          "phase": "running"
+        },
+        {
+          "node": "euc-h100-0004",
+          "phase": "running"
+        }
+      ]
+    },
+    "p3-mid": {
+      "chip_type": "H100",
+      "chips_per_replica": 8,
+      "cluster": "eu-central",
+      "priority": 3,
+      "quota": "research-rl",
+      "statuses_by_replica": [
+        {
+          "node": "euc-h100-0005",
+          "phase": "running"
+        },
+        {
+          "node": "euc-h100-0006",
+          "phase": "running"
+        },
+        {
+          "node": "euc-h100-0007",
+          "phase": "running"
+        }
+      ]
+    },
+    "p4-big": {
+      "chip_type": "H100",
+      "chips_per_replica": 8,
+      "cluster": null,
+      "priority": 4,
+      "quota": "research-vision",
+      "statuses_by_replica": [
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        }
+      ]
+    },
+    "p4-small": {
+      "chip_type": "H100",
+      "chips_per_replica": 8,
+      "cluster": "us-east",
+      "priority": 4,
+      "quota": "research-vision",
+      "statuses_by_replica": [
+        {
+          "node": "use-h100-0012",
+          "phase": "running"
+        }
+      ]
+    },
+    "p5-big": {
+      "chip_type": "H100",
+      "chips_per_replica": 8,
+      "cluster": null,
+      "priority": 5,
+      "quota": "research-vision",
+      "statuses_by_replica": [
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        },
+        {
+          "node": null,
+          "phase": "running"
+        }
+      ]
+    },
+    "p5-small": {
+      "chip_type": "H100",
+      "chips_per_replica": 8,
+      "cluster": "us-east",
+      "priority": 5,
+      "quota": "platform-ci",
+      "statuses_by_replica": [
+        {
+          "node": "use-h100-0013",
+          "phase": "running"
+        }
+      ]
+    },
+    "west-busy": {
+      "chip_type": "H100",
+      "chips_per_replica": 8,
+      "cluster": "us-west",
+      "priority": 5,
+      "quota": "research-vision",
+      "statuses_by_replica": [
+        {
+          "node": "usw-h100-0000",
+          "phase": "running"
+        },
+        {
+          "node": "usw-h100-0001",
+          "phase": "running"
+        },
+        {
+          "node": "usw-h100-0002",
+          "phase": "running"
+        },
+        {
+          "node": "usw-h100-0003",
+          "phase": "running"
+        },
+        {
+          "node": "usw-h100-0004",
+          "phase": "running"
+        },
+        {
+          "node": "usw-h100-0005",
+          "phase": "running"
+        },
+        {
+          "node": "usw-h100-0006",
+          "phase": "running"
+        },
+        {
+          "node": "usw-h100-0007",
+          "phase": "running"
+        },
+        {
+          "node": "usw-h100-0008",
+          "phase": "running"
+        },
+        {
+          "node": "usw-h100-0009",
+          "phase": "running"
+        },
+        {
+          "node": "usw-h100-0010",
+          "phase": "running"
+        },
+        {
+          "node": "usw-h100-0011",
+          "phase": "running"
+        }
+      ]
+    }
+  },
+  "solver_status": "ok/optimal"
+}
