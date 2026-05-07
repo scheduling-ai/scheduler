@@ -20,6 +20,14 @@ docs/private/
 
 # UI (Svelte/Vite)
 py-scheduler/scheduler/ui/node_modules/
-py-scheduler/scheduler/ui/dist/.claude/
+py-scheduler/scheduler/ui/dist/
+
+# Claude Code (per-user / per-machine state)
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+
+# Other AI tool state
 .gemini/
+
+# Local screenshots
 Screenshot*
