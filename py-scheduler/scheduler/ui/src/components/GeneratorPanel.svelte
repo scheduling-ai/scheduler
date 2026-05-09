@@ -20,14 +20,20 @@
 
 <div class="gen-section">
   <label class="gen-field">
-    <span>Solver</span>
+    <span>Source</span>
     <select
-      bind:value={sim.liveScheduler}
-      onchange={() => sim.onLiveSchedulerChange()}
+      bind:value={sim.liveSource}
+      onchange={() => sim.onLiveSourceChange()}
     >
-      {#each sim.solvers as solver}
-        <option value={solver.ref}>{solver.name}</option>
-      {/each}
+      {#if sim.liveSources.length}
+        {#each sim.liveSources as source}
+          <option value={source.name}>{source.label}</option>
+        {/each}
+      {:else}
+        {#each sim.solvers as solver}
+          <option value={solver.ref}>{solver.name}</option>
+        {/each}
+      {/if}
     </select>
   </label>
 </div>

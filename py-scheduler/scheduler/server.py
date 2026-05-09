@@ -38,6 +38,42 @@ GENERATOR_URL = os.environ.get("GENERATOR_URL", "").rstrip("/") or None
 SPA_ROUTES = {"/", "/index.html", "/live", "/replay", "/generator"}
 
 
+def _load_bridge_sources() -> list[dict]:
+    """Live-mode source list.
+
+    ``BRIDGE_SOURCES`` is JSON: ``[{"name": "...", "label": "...", "url": "..."}]``.
+    The UI surfaces ``label`` in its dropdown and polls
+    ``/state/latest-<name>.json`` to get a snapshot from ``url``.
+
+    If unset, fall back to the single-bridge ``BRIDGE_URL`` (back-compat
+    with the original docker-compose deployment) under the synthetic
+    name ``live``.
+    """
+    raw = os.environ.get("BRIDGE_SOURCES", "").strip()
+    if raw:
+        try:
+            sources = json.loads(raw)
+        except json.JSONDecodeError as e:
+            log.error("invalid BRIDGE_SOURCES JSON: %s", e)
+            return []
+        out: list[dict] = []
+        for s in sources:
+            name = s.get("name")
+            url = s.get("url", "").rstrip("/")
+            if not name or not url:
+                log.warning("BRIDGE_SOURCES entry missing name/url: %r", s)
+                continue
+            out.append({"name": name, "label": s.get("label") or name, "url": url})
+        return out
+    if BRIDGE_URL is not None:
+        return [{"name": "live", "label": "Live", "url": BRIDGE_URL}]
+    return []
+
+
+BRIDGE_SOURCES = _load_bridge_sources()
+BRIDGE_SOURCES_BY_NAME = {s["name"]: s for s in BRIDGE_SOURCES}
+
+
 def _json_response(
     handler: http.server.BaseHTTPRequestHandler, data: object, status: int = 200
 ) -> None:
@@ -115,10 +151,14 @@ def make_handler(
                     return
 
                 if rel.startswith("latest-") and rel.endswith(".json"):
-                    if BRIDGE_URL is not None:
-                        _proxy(self, "GET", f"{BRIDGE_URL}/snapshot")
+                    name = rel[len("latest-") : -len(".json")]
+                    source = BRIDGE_SOURCES_BY_NAME.get(name)
+                    if source is not None:
+                        _proxy(self, "GET", f"{source['url']}/snapshot")
                         return
                     # Local-dev path: read the file loop-runner wrote.
+                    # Falls through when no bridge sources are configured —
+                    # used by `uv run loop-runner` + `uv run scheduler-ui`.
                     file = state_dir / rel
                     if file.exists() and file.is_file():
                         self._serve_file(file, "application/json")
@@ -155,6 +195,18 @@ def make_handler(
 
             if path == "/api/solvers":
                 _json_response(self, [{"name": k, "ref": k} for k in SOLVERS])
+                return
+
+            if path == "/api/sources":
+                # Live-mode source list for the UI dropdown.
+                # Each entry: name (URL key) + label (display string).
+                # Empty in dev when LOOP_RUNNER_STATE_DIR-backed mode is
+                # in use — the UI then falls back to /api/solvers as
+                # before.
+                _json_response(
+                    self,
+                    [{"name": s["name"], "label": s["label"]} for s in BRIDGE_SOURCES],
+                )
                 return
 
             if path in SPA_ROUTES or path.startswith("/scenarios/"):

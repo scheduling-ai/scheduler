@@ -28,25 +28,31 @@
       <section class="home-card">
         <h2>Live stream</h2>
         <p>
-          Watch the continuously running solver in real time. See how the
-          scheduler places jobs as workloads arrive and fail.
+          Watch a live cluster: see what's running, what's queued, and where
+          each replica landed.
         </p>
         <div class="control-group">
-          <label for="home-live-scheduler">Scheduler</label>
+          <label for="home-live-source">Source</label>
           <select
-            id="home-live-scheduler"
+            id="home-live-source"
             style="flex:1;"
-            bind:value={sim.homeLiveScheduler}
+            bind:value={sim.homeLiveSource}
           >
-            {#each sim.solvers as solver}
-              <option value={solver.ref}>{solver.name}</option>
-            {/each}
+            {#if sim.liveSources.length}
+              {#each sim.liveSources as source}
+                <option value={source.name}>{source.label}</option>
+              {/each}
+            {:else}
+              {#each sim.solvers as solver}
+                <option value={solver.ref}>{solver.name}</option>
+              {/each}
+            {/if}
           </select>
         </div>
         <button
           class="btn primary"
           onclick={() => {
-            sim.liveScheduler = sim.homeLiveScheduler;
+            sim.liveSource = sim.homeLiveSource;
             sim.bootstrapLive().catch((e) => sim.showError(e.message));
           }}>Connect live</button
         >

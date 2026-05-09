@@ -15,10 +15,14 @@ class SimState {
   currentSource = $state<"none" | "live" | "scenario" | "file">("none");
   currentScenarioName = $state("production_scale");
   currentSessionUrl = $state("");
-  liveScheduler = $state("milp");
+  /// URL key for the live-mode snapshot source.  Defaults to "milp" so the
+  /// existing local-dev loop-runner setup still works (it writes
+  /// latest-milp.json + latest-heuristic.json).  In production this gets
+  /// set to a configured source name like "kueue" or "solver".
+  liveSource = $state("milp");
   replayRunSolver = $state(true);
   replaySolver = $state("milp");
-  homeLiveScheduler = $state("milp");
+  homeLiveSource = $state("milp");
   homeScenarioSolver = $state("milp");
   selectedPod = $state<string | null>(null);
   selectedGangIdx = $state<number | null>(null);
@@ -41,6 +45,9 @@ class SimState {
   errorVisible = $state(false);
   scenarios = $state<{ name: string; description: string }[]>([]);
   solvers = $state<{ name: string; ref: string }[]>([]);
+  /// Live-mode sources from /api/sources.  Empty in local-dev mode where
+  /// loop-runner writes files; the dropdown then falls back to `solvers`.
+  liveSources = $state<{ name: string; label: string }[]>([]);
   gen = new GeneratorState(
     () => this.currentMode === "live",
     (msg) => this.showError(msg),
@@ -277,7 +284,7 @@ class SimState {
     let path = "/";
     if (this.currentSource === "live") {
       path = "/live";
-      params.set("scheduler", this.liveScheduler);
+      params.set("source", this.liveSource);
       if (this.frames.length) params.set("frame", String(this.currentFrameIdx));
     } else if (this.currentSource === "scenario" && this.currentScenarioName) {
       path = `/scenarios/${encodeURIComponent(this.currentScenarioName)}`;
@@ -313,9 +320,24 @@ class SimState {
     const data = await fetchJson("/api/solvers");
     this.solvers = data;
     this.replaySolver = "milp";
-    this.liveScheduler = "milp";
-    this.homeLiveScheduler = "milp";
     this.homeScenarioSolver = "milp";
+    // liveSource defaults to the first listed solver so local-dev
+    // (loop-runner writing latest-milp.json) Just Works.  Production
+    // overrides this in loadLiveSources.
+    this.liveSource = this.solvers[0]?.ref || "milp";
+    this.homeLiveSource = this.liveSource;
+  }
+  async loadLiveSources() {
+    try {
+      const data = await fetchJson("/api/sources");
+      this.liveSources = Array.isArray(data) ? data : [];
+    } catch {
+      this.liveSources = [];
+    }
+    if (this.liveSources.length) {
+      this.liveSource = this.liveSources[0].name;
+      this.homeLiveSource = this.liveSource;
+    }
   }
   disconnectLive() {
     if (this.livePollTimer) {
@@ -444,7 +466,7 @@ class SimState {
     reader.readAsText(file);
   }
   async bootstrapLive(frame: number | null = null) {
-    const scheduler = this.liveScheduler;
+    const source = this.liveSource;
     this.disconnectLive();
     this.currentSource = "live";
     this.currentScenarioName = "";
@@ -453,13 +475,13 @@ class SimState {
     this.connectionKind = "";
     try {
       const latest = await fetchJson(
-        `/state/latest-${encodeURIComponent(scheduler)}.json`,
+        `/state/latest-${encodeURIComponent(source)}.json`,
       );
       this.frames = [latest];
       this.liveLastSeq = latest.seq || 0;
     } catch {
       this.frames = [];
-      this.showError(`No live data yet for ${scheduler}.`);
+      this.showError(`No live data yet for ${source}.`);
     }
     this.initApp("live");
     this.syncRoute();
@@ -473,8 +495,8 @@ class SimState {
   async pollLiveSnapshot() {
     if (this.currentMode !== "live") return;
     try {
-      const scheduler = encodeURIComponent(this.liveScheduler);
-      const snap = await fetchJson(`/state/latest-${scheduler}.json`);
+      const source = encodeURIComponent(this.liveSource);
+      const snap = await fetchJson(`/state/latest-${source}.json`);
       const seq = snap?.seq || 0;
       if (seq > this.liveLastSeq) {
         this.liveLastSeq = seq;
@@ -486,11 +508,7 @@ class SimState {
     }
   }
   upsertLiveSnapshot(snapshot: Frame) {
-    if (
-      this.currentMode !== "live" ||
-      snapshot.scheduler !== this.liveScheduler
-    )
-      return;
+    if (this.currentMode !== "live") return;
     const existingIndex = this.frames.findIndex((f) => f.seq === snapshot.seq);
     if (existingIndex >= 0) {
       this.frames[existingIndex] = snapshot;
@@ -719,12 +737,16 @@ class SimState {
       this.requestFrame(this.currentFrameIdx);
     else this.syncRoute();
   }
-  onLiveSchedulerChange() {
+  onLiveSourceChange() {
     if (this.currentMode === "live")
       this.bootstrapLive().catch((e: any) => this.showError(e.message));
   }
   async initFromUrl() {
-    await Promise.all([this.loadScenarios(), this.loadSolvers()]);
+    await Promise.all([
+      this.loadScenarios(),
+      this.loadSolvers(),
+      this.loadLiveSources(),
+    ]);
     const params = new URLSearchParams(window.location.search);
     const pathname = decodeURIComponent(
       window.location.pathname.replace(/\/+$/, "") || "/",
@@ -743,8 +765,8 @@ class SimState {
     }
     if (pathname === "/live" || params.get("mode") === "live") {
       try {
-        if (params.get("scheduler"))
-          this.liveScheduler = params.get("scheduler")!;
+        const src = params.get("source") || params.get("scheduler");
+        if (src) this.liveSource = src;
         await this.bootstrapLive(Number(params.get("frame") || 0));
         return;
       } catch (error: any) {

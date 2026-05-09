@@ -4,6 +4,14 @@
 
   const chips = $derived(sim.parsedView?.chipFree ?? []);
 
+  // Live-mode source label.  Surfaced in the header so it's clear which
+  // cluster is being watched when more than one source is configured.
+  const liveSourceLabel = $derived.by(() => {
+    if (sim.currentMode !== "live") return "";
+    const found = sim.liveSources.find((s) => s.name === sim.liveSource);
+    return found?.label || sim.liveSource;
+  });
+
   const counterText = $derived.by(() => {
     if (!sim.frames.length) return "0 / 0";
     if (sim.currentMode === "live")
@@ -117,6 +125,15 @@
             {c.chipType}: {c.free.toLocaleString()} free
           </button>
         {/each}
+      </div>
+    {/if}
+
+    {#if sim.currentMode === "live" && liveSourceLabel && sim.liveSources.length > 1}
+      <div
+        class="hdr-source"
+        title="Live source — switch via the Source picker in the traffic-gen panel"
+      >
+        {liveSourceLabel}
       </div>
     {/if}
 

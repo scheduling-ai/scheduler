@@ -111,6 +111,17 @@ header.compact {
   background: rgba(255, 255, 255, 0.05);
 }
 
+.hdr-source {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary, #c9d1d9);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 .header-top {
   display: flex;
   align-items: center;
