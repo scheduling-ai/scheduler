@@ -2452,4 +2452,169 @@ mod tests {
             "pod on a node outside the candidate set must be dropped"
         );
     }
+
+    /// Jobs and standalone Pods in `excluded_namespaces` are dropped from
+    /// the snapshot.  Critical: the same filter must apply to both the
+    /// job loop and the pod loop — a regression in either side would
+    /// flood the UI with kube-system noise.
+    #[test]
+    fn observe_skips_excluded_namespaces() {
+        let mut config = observe_config();
+        config.excluded_namespaces = vec!["kube-system".into()];
+
+        // System Job in the excluded namespace.
+        let sys_job = K8sJob {
+            metadata: ObjectMeta {
+                name: Some("sys-job".to_string()),
+                namespace: Some("kube-system".to_string()),
+                uid: Some("uid-sys".to_string()),
+                ..Default::default()
+            },
+            spec: Some(JobSpec {
+                suspend: Some(false),
+                parallelism: Some(1),
+                template: PodTemplateSpec::default(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // User Job in default namespace — should surface.
+        let user_job = K8sJob {
+            metadata: ObjectMeta {
+                name: Some("user-job".to_string()),
+                namespace: Some("default".to_string()),
+                uid: Some("uid-user".to_string()),
+                ..Default::default()
+            },
+            spec: Some(JobSpec {
+                suspend: Some(false),
+                parallelism: Some(1),
+                template: PodTemplateSpec::default(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        // Standalone Pod in excluded namespace.
+        let sys_pod = Pod {
+            metadata: ObjectMeta {
+                name: Some("sys-pod".to_string()),
+                namespace: Some("kube-system".to_string()),
+                ..Default::default()
+            },
+            spec: Some(PodSpec {
+                node_name: Some("node-1".to_string()),
+                ..Default::default()
+            }),
+            status: Some(PodStatus {
+                phase: Some("Running".to_string()),
+                ..Default::default()
+            }),
+        };
+        // User Pod in default namespace — should surface.
+        let user_pod = Pod {
+            metadata: ObjectMeta {
+                name: Some("user-pod".to_string()),
+                namespace: Some("default".to_string()),
+                ..Default::default()
+            },
+            spec: Some(PodSpec {
+                node_name: Some("node-1".to_string()),
+                ..Default::default()
+            }),
+            status: Some(PodStatus {
+                phase: Some("Running".to_string()),
+                ..Default::default()
+            }),
+        };
+        let user_job_pod = test_pod("user-job-0", "uid-user", "node-1");
+
+        let (_cluster, pods) = build_observed_cluster_state(
+            &make_node_store(vec![test_node("node-1", "H100", 8)]),
+            &make_pod_store(vec![sys_pod, user_pod, user_job_pod]),
+            &make_job_store(vec![sys_job, user_job]),
+            "cluster-a",
+            &config,
+        );
+
+        assert!(
+            pods.contains_key("user-job"),
+            "user-namespace Job must surface"
+        );
+        assert!(
+            pods.contains_key("user-pod"),
+            "user-namespace standalone Pod must surface"
+        );
+        assert!(
+            !pods.contains_key("sys-job"),
+            "Job in excluded namespace must be dropped"
+        );
+        assert!(
+            !pods.contains_key("sys-pod"),
+            "standalone Pod in excluded namespace must be dropped"
+        );
+    }
+
+    /// Suspended Jobs (the most common Kueue "queued" state) must surface
+    /// with Suspended replicas — not silently disappear or look Running.
+    /// The UI's queue/pending view depends on this branch.
+    #[test]
+    fn observe_suspended_job_surfaces_suspended_replicas() {
+        let config = observe_config();
+        // Suspended Job with parallelism=3.  No child pods exist (Kueue
+        // hasn't admitted it yet), no node assignment.
+        let job = K8sJob {
+            metadata: ObjectMeta {
+                name: Some("queued".to_string()),
+                namespace: Some("default".to_string()),
+                uid: Some("uid-q".to_string()),
+                labels: Some([("accelerator".to_string(), "H100".to_string())].into()),
+                ..Default::default()
+            },
+            spec: Some(JobSpec {
+                suspend: Some(true),
+                parallelism: Some(3),
+                template: PodTemplateSpec::default(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let (_cluster, pods) = build_observed_cluster_state(
+            &make_node_store(vec![test_node("node-1", "H100", 8)]),
+            &make_pod_store(vec![]),
+            &make_job_store(vec![job]),
+            "cluster-a",
+            &config,
+        );
+
+        let p = pods
+            .get("queued")
+            .expect("suspended Job must surface in observe snapshot");
+        assert_eq!(
+            p.statuses_by_replica.len(),
+            3,
+            "suspended Job should produce one entry per replica"
+        );
+        for r in &p.statuses_by_replica {
+            assert_eq!(
+                r.phase,
+                Phase::Suspended,
+                "suspended Job replicas must report Suspended phase, got {:?}",
+                r.phase
+            );
+            assert!(
+                r.node.is_none(),
+                "suspended replicas must not be node-pinned"
+            );
+        }
+        // Suspended Jobs have no live pods, so `cluster` is set via the
+        // is_suspended branch in build_observed_cluster_state.  The UI
+        // uses this to scope the workload to a cluster.
+        assert_eq!(
+            p.cluster.as_deref(),
+            Some("cluster-a"),
+            "suspended Job must still be cluster-pinned for UI grouping"
+        );
+    }
 }
