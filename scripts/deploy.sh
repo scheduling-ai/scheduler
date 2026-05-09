@@ -67,7 +67,18 @@ echo "==> Applying scheduler-plane manifests"
 # Set SENTRY_DEBUG=1 in the environment before invoking deploy.sh to enable
 # them for ad-hoc verification — never bake that on permanently.
 SENTRY_DEBUG_VALUE="${SENTRY_DEBUG:-}"
+# Skip the observe-only bridge if its kubeconfig Secret hasn't been
+# provisioned (no observed cluster onboarded yet).  The UI gracefully
+# handles a missing source — the dropdown just shows the others.
+HAS_OBSERVED_KUBECONFIG=0
+if kubectl -n scheduler-system get secret observed-cluster-kubeconfig >/dev/null 2>&1; then
+  HAS_OBSERVED_KUBECONFIG=1
+fi
 for f in infra/k8s/scheduler-plane/*.yaml; do
+  if [[ "$(basename "${f}")" == "k8s-bridge-observed.yaml" && "${HAS_OBSERVED_KUBECONFIG}" -eq 0 ]]; then
+    echo "    (skipping ${f} — observed-cluster-kubeconfig Secret not found)"
+    continue
+  fi
   # Use sed so we don't depend on envsubst being installed.
   sed -e "s|\${IMAGE}|${IMAGE}|g" \
       -e "s|\${GIT_SHA}|${SHA}|g" \
@@ -80,6 +91,9 @@ kubectl -n scheduler-system rollout status statefulset/postgres --timeout=3m
 kubectl -n scheduler-system rollout status deploy/k8s-bridge --timeout=3m
 kubectl -n scheduler-system rollout status deploy/load-generator --timeout=3m
 kubectl -n scheduler-system rollout status deploy/scheduler-ui --timeout=3m
+if [[ "${HAS_OBSERVED_KUBECONFIG}" -eq 1 ]]; then
+  kubectl -n scheduler-system rollout status deploy/k8s-bridge-observed --timeout=3m
+fi
 if kubectl -n scheduler-system get secret pomerium-zero >/dev/null 2>&1; then
   kubectl -n scheduler-system rollout status deploy/pomerium --timeout=3m
 else

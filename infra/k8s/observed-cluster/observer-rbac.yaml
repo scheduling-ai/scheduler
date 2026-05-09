@@ -1,0 +1,50 @@
+# Read-only RBAC for the observe-only bridge.
+#
+# Apply this to the *observed* cluster (the one running Kueue or otherwise
+# scheduling natively) — NOT the scheduler plane.  The bridge in the
+# scheduler plane reaches this cluster via a kubeconfig Secret containing
+# a token bound to the `scheduler-observer` ServiceAccount defined here.
+#
+# Onboarding a customer cluster:
+#   1. Apply this file to their cluster.
+#   2. Mint a long-lived token for the SA (or use an exec-credential plugin).
+#   3. Build a kubeconfig pointing at their API server with that token.
+#   4. Create the `observed-cluster-kubeconfig` Secret in scheduler-system
+#      with that kubeconfig as `config`.
+#   5. Apply k8s-bridge-observed.yaml.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: scheduler-observer
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: scheduler-observer
+  namespace: scheduler-observer
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: scheduler-observer-reader
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: scheduler-observer-reader
+subjects:
+  - kind: ServiceAccount
+    name: scheduler-observer
+    namespace: scheduler-observer
+roleRef:
+  kind: ClusterRole
+  name: scheduler-observer-reader
+  apiGroup: rbac.authorization.k8s.io

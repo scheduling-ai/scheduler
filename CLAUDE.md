@@ -35,6 +35,12 @@ Built-in scenarios (`py-scheduler/scheduler/scenarios/*.jsonl`) work in the UI w
 - Format Rust with `cargo fmt --all` before committing.
 - UI: format with `npm run format`, type-check with `npm run check`, build with `npm run build` (all from `py-scheduler/scheduler/ui/`).
 
+## CI
+
+CI runs on CircleCI, not GitHub Actions — `gh run list` will not show
+runs. Use `circleci` CLI or the CircleCI web UI for run history and
+logs.
+
 ## Pre-submit checks
 
 **Always run these checks before committing.** Do not commit if any check fails.
@@ -71,6 +77,21 @@ logically separate from each data-plane cluster it schedules into,
 even when co-located for cost. Adding a second data-plane cluster is a
 config change (extra entry in the kubeconfig Secret + `--cluster` flag
 on the bridge), not a code change.
+
+### Observe-only mode (no scheduling)
+
+`k8s-bridge serve-observe` reflects an external cluster (Kueue or
+otherwise scheduling natively) and serves the same `/snapshot` Frame
+the UI already consumes — no solver subprocess, no binder. Used to
+ship the UI as a standalone product against clusters we don't control.
+Manifests in `infra/k8s/scheduler-plane/k8s-bridge-observed.yaml`;
+read-only RBAC for the observed cluster in
+`infra/k8s/observed-cluster/observer-rbac.yaml`. Skipped automatically
+by `deploy.sh` if the `observed-cluster-kubeconfig` Secret isn't present.
+
+The UI's live-mode dropdown reads `BRIDGE_SOURCES` (JSON list of
+`{name, label, url}`) from the UI server's env. Each entry maps to one
+bridge instance; switching the dropdown switches the snapshot source.
 
 ## Debugging the UI
 

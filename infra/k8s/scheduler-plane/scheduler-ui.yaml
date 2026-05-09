@@ -19,8 +19,15 @@ spec:
           imagePullPolicy: Always
           command: ["uv", "run", "--frozen", "--no-sync", "scheduler-ui"]
           env:
-            - name: BRIDGE_URL
-              value: http://k8s-bridge:8080
+            # Live-mode source list.  Each entry is one bridge instance the
+            # UI dropdown can switch between.  Adding a third source =
+            # one more JSON entry + one more bridge Deployment.
+            - name: BRIDGE_SOURCES
+              value: |
+                [
+                  {"name": "solver",   "label": "Custom scheduler",  "url": "http://k8s-bridge:8080"},
+                  {"name": "observed", "label": "Observed cluster",  "url": "http://k8s-bridge-observed:8080"}
+                ]
             - name: GENERATOR_URL
               value: http://load-generator:8100
             - name: PORT

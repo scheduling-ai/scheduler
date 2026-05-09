@@ -1,0 +1,99 @@
+# Observe-only bridge: reflects state from a separate cluster (Kueue or
+# anything else scheduling natively) and serves a Frame snapshot for the UI.
+#
+# This is a sibling of `k8s-bridge` — same image, same `/snapshot` HTTP
+# contract, but no solver subprocess and no binder.  The UI talks to it
+# the same way it talks to the scheduling bridge; the source-selector
+# dropdown lets users pick which cluster to look at.
+#
+# Kubeconfig for the observed cluster lives in the `observed-cluster-kubeconfig`
+# Secret (created out of band — same pattern as `data-plane-kubeconfig`).
+# Skipped at deploy time if that Secret isn't present, so this manifest is
+# safe to apply in environments that haven't onboarded an observed cluster yet.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-bridge-observed
+  namespace: scheduler-system
+  annotations:
+    # Read by deploy.sh: skip rollout if the kubeconfig Secret hasn't
+    # been provisioned (so the manifest doesn't fail on a fresh cluster
+    # without an observed-cluster onboarded).
+    scheduler.example.com/requires-secret: observed-cluster-kubeconfig
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: k8s-bridge-observed
+  template:
+    metadata:
+      labels:
+        app: k8s-bridge-observed
+    spec:
+      containers:
+        - name: bridge
+          image: ${IMAGE}
+          imagePullPolicy: Always
+          command:
+            - /usr/local/bin/k8s-bridge
+            - serve-observe
+            - --cluster
+            - observed:observed
+            - --chip-count-label
+            - scheduler.example.com/chips
+            - --port
+            - "8080"
+            - --interval-seconds
+            - "5"
+            - --snapshot-label
+            - observed
+          env:
+            - name: KUBECONFIG
+              value: /etc/kubeconfig/config
+            - name: RUST_LOG
+              value: info
+            - name: SENTRY_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: sentry
+                  key: SENTRY_DSN
+                  optional: true
+            - name: SENTRY_ENV
+              value: production
+            - name: GIT_SHA
+              value: "${GIT_SHA}"
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: kubeconfig
+              mountPath: /etc/kubeconfig
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              # /snapshot returns 404 until the first reflector tick; once
+              # populated it stays serving JSON.  That's the right "ready"
+              # signal because the UI's first poll is for /snapshot anyway.
+              path: /snapshot
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: kubeconfig
+          secret:
+            secretName: observed-cluster-kubeconfig
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-bridge-observed
+  namespace: scheduler-system
+spec:
+  selector:
+    app: k8s-bridge-observed
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
