@@ -1,15 +1,24 @@
 //! Build the [`SolverRequest`] each cycle.
 //!
-//! Aggregates state from three sources:
-//!   1. Per-cluster reflectors (Jobs, Pods, Nodes) → `build_cluster_state`.
-//!   2. The placement shadow — recently-applied placements not yet visible
-//!      in the reflector — re-injected so the solver doesn't double-book
-//!      nodes during the gap.
-//!   3. The workload store — pending/suspended workloads not yet on any
-//!      cluster.
+//! Single builder serves both modes — solver mode (the bridge actively
+//! schedules) and observe-only mode (the bridge passively reflects an
+//! externally-managed cluster).  The two modes diverge in three places,
+//! all parameterized:
 //!
-//! Also exposes a few small helpers shared with tests: `build_cluster_state`,
-//! `node_chip_capacity`, `get_candidate_nodes`.
+//!   * `placement_shadow: Option<&mut PlacementShadow>` — `Some` only
+//!     when we're the scheduler.  Drives shadow read/write/cleanup,
+//!     gates the "keep nodes occupied during pod termination" subcase,
+//!     and gates warnings about workloads that bypass our binder.
+//!   * `store_workloads: Option<&HashMap<...>>` — `Some` only when we
+//!     own a workload store.  Adds queued workloads to the snapshot
+//!     and to gang-set membership.
+//!   * `pod_predicate: impl Fn(&Pod) -> bool` — solver mode passes
+//!     `is_managed_by_us`; observe mode passes `|_| true`.
+//!
+//! The remaining behaviors (namespace exclusion, chip-type fallback
+//! from node labels, dropping replicas on unknown nodes) are
+//! always-on but no-op when the relevant config is empty / inputs are
+//! well-formed — so solver mode is unchanged in practice.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -30,24 +39,28 @@ use super::extract::{
 };
 use super::{BinderConfig, ClusterRuntime, PlacementShadow};
 
-/// Build a [`SolverRequest`]-shaped snapshot for observe-only mode.
+/// Predicate matching standalone Pods we own (solver mode).  Observe
+/// mode passes `|_| true` to surface every Pod.
+pub(super) fn is_managed_pod(config: &BinderConfig) -> impl Fn(&Pod) -> bool + Copy + '_ {
+    |pod: &Pod| {
+        pod.labels()
+            .get(&config.managed_by_label)
+            .map(|v| v == &config.managed_by_value)
+            .unwrap_or(false)
+    }
+}
+
+/// Aggregate per-cluster state into a single [`SolverRequest`].
 ///
-/// The snapshot describes everything we can see across all clusters:
-/// every Ready node and every active pod/job, regardless of who scheduled
-/// them.  No solver runs, nothing is bound — this exists purely to feed
-/// the UI's per-node grid when the bridge is being used as a passive
-/// observer (e.g. against a Kueue-managed cluster).
-///
-/// Differs from [`build_solver_request_multi`] in three ways:
-///   * No `placement_shadow`: nothing is in-flight because nothing is
-///     being placed.
-///   * No `WorkloadStore`: queued workloads belong to whoever runs the
-///     real scheduler.
-///   * No quota filtering: we surface whatever annotation is present
-///     (or "default") rather than dropping unknown-quota workloads.
-pub(super) fn build_observed_request_multi(
+/// `placement_shadow` and `store_workloads` are `Some` in solver mode
+/// and `None` in observe mode.  See module docs for the shape of the
+/// divergence.
+pub(super) fn build_request_multi(
     runtimes: &[ClusterRuntime],
     config: &BinderConfig,
+    store_workloads: Option<&HashMap<String, Workload>>,
+    mut placement_shadow: Option<&mut PlacementShadow>,
+    pod_predicate: impl Fn(&Pod) -> bool + Copy,
 ) -> SolverRequest {
     let mut cluster_states: Vec<SolverCluster> = Vec::with_capacity(runtimes.len());
     let mut pods: HashMap<String, SolverPod> = HashMap::new();
@@ -56,8 +69,15 @@ pub(super) fn build_observed_request_multi(
         let node_r = rt.node_reader();
         let pod_r = rt.pod_reader();
         let job_r = rt.job_reader();
-        let (cluster, cluster_pods) =
-            build_observed_cluster_state(&node_r, &pod_r, &job_r, &rt.name, config);
+        let (cluster, cluster_pods) = build_cluster_state(
+            &node_r,
+            &pod_r,
+            &job_r,
+            &rt.name,
+            config,
+            placement_shadow.as_deref_mut(),
+            pod_predicate,
+        );
         cluster_states.push(cluster);
 
         for (name, pod) in cluster_pods {
@@ -65,25 +85,99 @@ pub(super) fn build_observed_request_multi(
         }
     }
 
-    let gang_sets = build_observed_gang_sets(runtimes, config, &pods);
+    // Inject just-placed workloads from the shadow that aren't yet
+    // visible in any reflector.  Closes the 1-cycle gap between store
+    // removal (apply_assignments_multi removes the workload from the
+    // store as soon as the k8s create succeeds) and the job reflector
+    // confirming the new Job — without this the solver sees the
+    // assigned nodes as free and could double-book them.
+    //
+    // Observe mode has no shadow; this block is a no-op.
+    if let Some(shadow) = placement_shadow.as_deref() {
+        for (name, (_, _, solver_pod)) in shadow.iter() {
+            if pods.contains_key(name) {
+                continue;
+            }
+            if let Some(pod) = solver_pod {
+                pods.entry(name.clone()).or_insert_with(|| pod.clone());
+            }
+        }
+    }
+
+    // Store-submitted workloads: not yet placed on any cluster, or
+    // suspended Pods pinned to a cluster.  Observe mode has no store;
+    // this block is a no-op.
+    if let Some(store) = store_workloads {
+        for (wl_name, workload) in store {
+            if pods.contains_key(wl_name) {
+                continue;
+            }
+            // Skip workloads in backoff — they failed placement too
+            // many times and will be retried when cluster state changes.
+            if workload.consecutive_failures >= job_store::BACKOFF_THRESHOLD {
+                continue;
+            }
+
+            let (chips, chip_type, priority, quota, parallelism) =
+                extract_workload_metadata(&workload.managed, config);
+
+            if !is_known_quota(config, &quota) {
+                warn!(
+                    workload = %wl_name,
+                    quota = %quota,
+                    "skipping store workload with unknown quota"
+                );
+                continue;
+            }
+
+            // Store-side workloads are always queued (suspended
+            // workloads stay on their cluster and reach the solver via
+            // reflector state).
+            let statuses_by_replica: Vec<SolverReplicaStatus> = (0..parallelism)
+                .map(|_| SolverReplicaStatus {
+                    phase: Phase::Running,
+                    node: None,
+                })
+                .collect();
+
+            pods.insert(
+                wl_name.clone(),
+                SolverPod {
+                    chips_per_replica: chips,
+                    chip_type,
+                    priority,
+                    quota,
+                    cluster: None,
+                    statuses_by_replica,
+                },
+            );
+        }
+    }
+
+    let gang_sets = build_gang_sets(runtimes, config, store_workloads, &pods, pod_predicate);
 
     SolverRequest {
         clusters: cluster_states,
         pods,
         gang_sets,
         quotas: config.quotas.clone(),
-        time_limit: 0.0,
+        // 30s is the solver's default budget; observe mode never runs
+        // a solver so this field is informational only.
+        time_limit: 30.0,
     }
 }
 
-/// Per-cluster observe-mode snapshot.  Pure function over the reflector
-/// stores; no shared mutable state.
-pub(super) fn build_observed_cluster_state(
+/// Build the [`SolverCluster`] (topology) and per-pod state for one
+/// cluster.  Solver and observe modes share this function — see
+/// [`build_request_multi`] for the divergence parameters.
+pub(super) fn build_cluster_state(
     node_store: &reflector::Store<Node>,
     pod_store: &reflector::Store<Pod>,
     job_store: &reflector::Store<K8sJob>,
     cluster_name: &str,
     config: &BinderConfig,
+    mut placement_shadow: Option<&mut PlacementShadow>,
+    pod_predicate: impl Fn(&Pod) -> bool,
 ) -> (SolverCluster, HashMap<String, SolverPod>) {
     let solver_nodes: Vec<SolverNode> = get_candidate_nodes(node_store, config)
         .iter()
@@ -98,15 +192,13 @@ pub(super) fn build_observed_cluster_state(
         })
         .collect();
 
-    // Index nodes by name for chip_type fallback when a pod's owning
-    // workload doesn't carry the chip-type label (typical for Kueue
-    // jobs — flavor info isn't on the Job, only on the assigned Node).
+    // Index nodes by name for chip_type fallback when a workload
+    // doesn't carry the chip-type label (typical for non-managed
+    // workloads — Kueue jobs only have flavor info on the assigned Node).
     let node_chip_type: HashMap<String, String> = solver_nodes
         .iter()
         .map(|n| (n.name.clone(), n.chip_type.clone()))
         .collect();
-
-    let mut solver_pods: HashMap<String, SolverPod> = HashMap::new();
 
     let excluded_ns: HashSet<&str> = config
         .excluded_namespaces
@@ -116,11 +208,15 @@ pub(super) fn build_observed_cluster_state(
     let in_excluded_ns =
         |ns: Option<&str>| -> bool { ns.map(|n| excluded_ns.contains(n)).unwrap_or(false) };
 
+    // Are we in solver mode?  Cached so we don't repeatedly call
+    // `placement_shadow.is_some()` and to keep call sites readable.
+    let is_managing = placement_shadow.is_some();
+
+    let mut solver_pods: HashMap<String, SolverPod> = HashMap::new();
+
+    // --- Jobs on the cluster ---
     for job in job_store.state() {
         if in_excluded_ns(job.metadata.namespace.as_deref()) {
-            continue;
-        }
-        if is_job_finished(&job) {
             continue;
         }
 
@@ -130,51 +226,166 @@ pub(super) fn build_observed_cluster_state(
             .cloned()
             .unwrap_or_else(|| job.name_any());
 
-        let (chips, mut chip_type, priority, quota, parallelism) =
-            extract_job_metadata(&job, config);
-
-        let is_suspended = job.spec.as_ref().and_then(|s| s.suspend).unwrap_or(false);
-
-        let statuses_by_replica: Vec<SolverReplicaStatus> = if is_suspended {
-            (0..parallelism)
-                .map(|_| SolverReplicaStatus {
-                    phase: Phase::Suspended,
-                    node: None,
-                })
-                .collect()
-        } else {
-            let mut s = build_replica_statuses_from_job_pods(pod_store, &job, parallelism);
-            // Derive chip_type from the assigned node when the workload
-            // didn't carry the chip-type label.  Common for non-managed
-            // workloads on a heterogeneous cluster.
-            if chip_type.is_empty() {
-                for status in &s {
-                    if let Some(node) = status.node.as_deref()
-                        && let Some(t) = node_chip_type.get(node)
-                        && !t.is_empty()
-                    {
-                        chip_type = t.clone();
-                        break;
-                    }
-                }
+        // Skip terminal Jobs entirely.  Without this, every
+        // completed/failed Job that hasn't been GC'd by k8s would be
+        // padded with phantom "Running/None" replicas (see
+        // build_replica_statuses_from_job_pods) and reach the
+        // solver/snapshot as zombie queued work.
+        if is_job_finished(&job) {
+            if let Some(s) = placement_shadow.as_deref_mut() {
+                s.remove(&job_name);
             }
-            // Drop replicas that landed on nodes outside our candidate set
-            // (we can't render them on the per-cluster grid).
-            s.retain(|r| match r.node.as_deref() {
-                Some(node) => node_chip_type.contains_key(node),
-                None => true,
-            });
-            s
-        };
-
-        if statuses_by_replica.is_empty() {
             continue;
         }
 
-        // Cluster pinning: only when at least one replica has actually
-        // landed on a known node in this cluster.  Pending workloads stay
-        // unpinned so the UI's per-cluster aggregation doesn't double-
-        // count them across clusters.
+        let (chips, mut chip_type, priority, quota, parallelism) =
+            extract_job_metadata(&job, config);
+
+        // Quota enforcement is solver-side: observe mode surfaces the
+        // workload regardless so the UI shows what's actually there.
+        // (When `config.quotas` is empty, `is_known_quota` returns true
+        // for everything — a no-op for solver too if quotas aren't
+        // configured.)
+        if is_managing && !is_known_quota(config, &quota) {
+            warn!(
+                workload = %job_name,
+                quota = %quota,
+                "skipping reflector-discovered Job with unknown quota"
+            );
+            if let Some(s) = placement_shadow.as_deref_mut() {
+                s.remove(&job_name);
+            }
+            continue;
+        }
+
+        // Footgun for kubectl-applied Jobs that bypass our binder by
+        // setting the wrong (or missing) schedulerName.  Only relevant
+        // when we're the scheduler — observe mode expects
+        // kube-scheduler to bind these pods.
+        if is_managing {
+            let template_scheduler = job
+                .spec
+                .as_ref()
+                .and_then(|s| s.template.spec.as_ref())
+                .and_then(|p| p.scheduler_name.as_deref());
+            if template_scheduler != Some(config.scheduler_name.as_str()) {
+                warn!(
+                    workload = %job_name,
+                    expected = %config.scheduler_name,
+                    actual = ?template_scheduler,
+                    "managed Job's pod template has wrong schedulerName; kube-scheduler will bind its pods, bypassing this scheduler"
+                );
+            }
+        }
+
+        let is_suspended = job.spec.as_ref().and_then(|s| s.suspend).unwrap_or(false);
+        let pods_present = pods_exist_for_job(pod_store, &job);
+
+        // Build statuses_by_replica.  Sources, in priority:
+        //   1. Bound child pods (always preferred when present).
+        //   2. Placement shadow — solver mode only; reconstructs
+        //      in-flight placements between store-remove and
+        //      reflector-confirm.
+        //   3. Empty pending — solver re-schedules; observe shows
+        //      as queued.
+        //
+        // For suspended jobs, solver mode keeps nodes occupied while
+        // pods terminate (graceful shutdown can take 30s) so it
+        // doesn't double-book.  Observe mode just emits Suspended.
+        let statuses_by_replica: Vec<SolverReplicaStatus> = if is_suspended {
+            if is_managing && pods_present {
+                build_replica_statuses_from_job_pods(pod_store, &job, parallelism)
+            } else {
+                if let Some(s) = placement_shadow.as_deref_mut() {
+                    s.remove(&job_name);
+                }
+                (0..parallelism)
+                    .map(|_| SolverReplicaStatus {
+                        phase: Phase::Suspended,
+                        node: None,
+                    })
+                    .collect()
+            }
+        } else if pods_present {
+            if let Some(s) = placement_shadow.as_deref_mut() {
+                s.remove(&job_name);
+            }
+            build_replica_statuses_from_job_pods(pod_store, &job, parallelism)
+        } else if let Some(shadow) = placement_shadow.as_deref()
+            && let Some((node_counts, _, _)) = shadow.get(&job_name)
+        {
+            // Placement decision in flight; reconstruct from the
+            // shadow so the assigned nodes appear occupied this cycle.
+            let mut s: Vec<SolverReplicaStatus> = node_counts
+                .iter()
+                .flat_map(|(node, &count)| {
+                    (0..count).map(move |_| SolverReplicaStatus {
+                        phase: Phase::Running,
+                        node: Some(node.clone()),
+                    })
+                })
+                .collect();
+            while (s.len() as u32) < parallelism {
+                s.push(SolverReplicaStatus {
+                    phase: Phase::Running,
+                    node: None,
+                });
+            }
+            s
+        } else {
+            // No pods, no shadow.  Emit pending replicas: solver
+            // mode treats this as "needs scheduling" (cluster=None
+            // below); observe mode renders it as queued.
+            (0..parallelism)
+                .map(|_| SolverReplicaStatus {
+                    phase: Phase::Running,
+                    node: None,
+                })
+                .collect()
+        };
+
+        // chip_type fallback from the assigned node's label.  No-op
+        // when the workload already carries the label (always true
+        // for solver-managed workloads).
+        if chip_type.is_empty() {
+            for status in &statuses_by_replica {
+                if let Some(node) = status.node.as_deref()
+                    && let Some(t) = node_chip_type.get(node)
+                    && !t.is_empty()
+                {
+                    chip_type = t.clone();
+                    break;
+                }
+            }
+        }
+
+        // Drop replicas that landed on nodes outside the candidate
+        // set — observe mode only.  Solver mode keeps them: an
+        // orphaned managed pod still needs tracking so we can re-bind
+        // or re-schedule it; dropping it would silently leak the
+        // workload from our view.
+        let statuses_by_replica: Vec<SolverReplicaStatus> = if is_managing {
+            statuses_by_replica
+        } else {
+            let filtered: Vec<_> = statuses_by_replica
+                .into_iter()
+                .filter(|r| {
+                    r.node
+                        .as_deref()
+                        .is_none_or(|n| node_chip_type.contains_key(n))
+                })
+                .collect();
+            if filtered.is_empty() {
+                continue;
+            }
+            filtered
+        };
+
+        // Cluster pinning: pin if any replica is placed on a known
+        // node OR the job is suspended (solver mode treats suspended
+        // workloads as cluster-pinned for re-admission decisions).
+        // Otherwise leave None — solver re-schedules; observe shows
+        // the workload as queued without cluster scoping.
         let cluster = if statuses_by_replica
             .iter()
             .any(|r| r.node.is_some() && r.phase != Phase::Suspended)
@@ -198,12 +409,28 @@ pub(super) fn build_observed_cluster_state(
         );
     }
 
-    // Standalone pods (no Job owner).  Skip pods owned by a Job — they
-    // are accounted for under the Job above.
+    // --- Standalone Pods on the cluster ---
+    //
+    // `pod_predicate` filters: solver mode requires our managed-by
+    // label; observe mode accepts every pod.  Pods owned by a Job are
+    // skipped — they're accounted for under the Job above.
+    //
+    // Per the model.py contract, each k8s Pod becomes its own
+    // single-replica SolverPod — independently schedulable and
+    // reclaimable, no gang-scheduling.  This means the SolverPod key
+    // must be the k8s pod name, not the `job-name` label: a
+    // Deployment's ReplicaSet stamps the same `job-name` onto every
+    // replica's pod template (see deployment_driver.py), so keying by
+    // label would collapse N replicas into one entry and silently
+    // drop the rest from the solver's view.
     for pod in pod_store.state() {
         if in_excluded_ns(pod.metadata.namespace.as_deref()) {
             continue;
         }
+        if !pod_predicate(&pod) {
+            continue;
+        }
+
         let owned_by_job = pod
             .metadata
             .owner_references
@@ -214,417 +441,16 @@ pub(super) fn build_observed_cluster_state(
             continue;
         }
 
-        let phase = pod
-            .status
-            .as_ref()
-            .and_then(|s| s.phase.as_deref())
-            .unwrap_or("Unknown");
-        if phase == "Succeeded" || phase == "Failed" {
-            continue;
-        }
-
         let pod_name = pod.name_any();
+
+        // Defensive: skip if a Job has already claimed this name.
         if solver_pods.contains_key(&pod_name) {
             continue;
         }
 
         let (chips, mut chip_type, priority, quota, _) = extract_pod_metadata(&pod, config);
-        let node_name = pod.spec.as_ref().and_then(|s| s.node_name.clone());
 
-        // Drop pods landed on nodes outside the candidate set — we can't
-        // render them.  Pending pods (no node yet) stay in the snapshot
-        // so the UI shows them as queued.
-        if let Some(node) = node_name.as_deref()
-            && !node_chip_type.contains_key(node)
-        {
-            continue;
-        }
-
-        if chip_type.is_empty()
-            && let Some(node) = node_name.as_deref()
-            && let Some(t) = node_chip_type.get(node)
-        {
-            chip_type = t.clone();
-        }
-
-        let cluster = node_name.as_ref().map(|_| cluster_name.to_string());
-
-        solver_pods.insert(
-            pod_name,
-            SolverPod {
-                chips_per_replica: chips,
-                chip_type,
-                priority,
-                quota,
-                cluster,
-                statuses_by_replica: vec![SolverReplicaStatus {
-                    phase: Phase::Running,
-                    node: node_name,
-                }],
-            },
-        );
-    }
-
-    let cluster = SolverCluster {
-        name: cluster_name.to_string(),
-        nodes: solver_nodes,
-    };
-
-    (cluster, solver_pods)
-}
-
-/// Gang sets for observe mode: derive purely from the gang-set annotation
-/// on observed Jobs/Pods.  No workload store to consult.
-fn build_observed_gang_sets(
-    runtimes: &[ClusterRuntime],
-    config: &BinderConfig,
-    known_pods: &HashMap<String, SolverPod>,
-) -> Vec<Vec<String>> {
-    let mut groups: HashMap<String, Vec<String>> = HashMap::new();
-
-    for rt in runtimes {
-        for job in rt.job_reader().state() {
-            let name = job
-                .labels()
-                .get(&config.job_name_label)
-                .cloned()
-                .unwrap_or_else(|| job.name_any());
-            if !known_pods.contains_key(&name) {
-                continue;
-            }
-            if let Some(gang_id) = job.annotations().get(&config.gang_set_annotation) {
-                groups.entry(gang_id.clone()).or_default().push(name);
-            }
-        }
-
-        for pod in rt.pod_reader().state() {
-            let owned_by_job = pod
-                .metadata
-                .owner_references
-                .as_ref()
-                .map(|refs| refs.iter().any(|r| r.kind == "Job"))
-                .unwrap_or(false);
-            if owned_by_job {
-                continue;
-            }
-            let pod_name = pod.name_any();
-            if !known_pods.contains_key(&pod_name) {
-                continue;
-            }
-            if let Some(gang_id) = pod.annotations().get(&config.gang_set_annotation) {
-                groups.entry(gang_id.clone()).or_default().push(pod_name);
-            }
-        }
-    }
-
-    let mut sets: Vec<Vec<String>> = groups
-        .into_values()
-        .filter(|members| members.len() > 1)
-        .collect();
-    for set in &mut sets {
-        set.sort();
-        set.dedup();
-    }
-    sets
-}
-
-/// Build a [`SolverRequest`] aggregating state from all clusters and the
-/// workload store.
-pub(super) fn build_solver_request_multi(
-    runtimes: &[ClusterRuntime],
-    config: &BinderConfig,
-    store_workloads: &HashMap<String, Workload>,
-    placement_shadow: &mut PlacementShadow,
-) -> SolverRequest {
-    let mut cluster_states: Vec<SolverCluster> = Vec::with_capacity(runtimes.len());
-    let mut pods: HashMap<String, SolverPod> = HashMap::new();
-
-    for rt in runtimes {
-        let node_r = rt.node_reader();
-        let pod_r = rt.pod_reader();
-        let job_r = rt.job_reader();
-        let (cluster, cluster_pods) =
-            build_cluster_state(&node_r, &pod_r, &job_r, &rt.name, config, placement_shadow);
-        cluster_states.push(cluster);
-
-        for (name, pod) in cluster_pods {
-            pods.entry(name).or_insert(pod);
-        }
-    }
-
-    // Inject just-placed workloads that have a pending entry with a SolverPod
-    // snapshot but are not yet visible in any cluster reflector.  This closes
-    // the 1-cycle gap between store removal (apply_assignments_multi removes
-    // the workload from the store as soon as the k8s create succeeds) and the
-    // job reflector confirming the new Job.  Without this, the solver would
-    // see the assigned nodes as free and could place another workload there.
-    for (name, (_, _, solver_pod)) in placement_shadow.iter() {
-        if pods.contains_key(name) {
-            continue;
-        }
-        if let Some(pod) = solver_pod {
-            pods.entry(name.clone()).or_insert_with(|| pod.clone());
-        }
-    }
-
-    // Store-submitted workloads: not yet placed on any cluster, or suspended
-    // Pods pinned to a cluster.
-    for (wl_name, workload) in store_workloads {
-        if pods.contains_key(wl_name) {
-            continue;
-        }
-
-        // Skip workloads in backoff — they failed placement too many times
-        // and will be retried when cluster state changes.
-        if workload.consecutive_failures >= job_store::BACKOFF_THRESHOLD {
-            continue;
-        }
-
-        let (chips, chip_type, priority, quota, parallelism) =
-            extract_workload_metadata(&workload.managed, config);
-
-        if !is_known_quota(config, &quota) {
-            warn!(
-                workload = %wl_name,
-                quota = %quota,
-                "skipping store workload with unknown quota"
-            );
-            continue;
-        }
-
-        // Store-side workloads are always queued (suspended workloads stay
-        // on their cluster and reach the solver via reflector state).
-        let statuses_by_replica: Vec<SolverReplicaStatus> = (0..parallelism)
-            .map(|_| SolverReplicaStatus {
-                phase: Phase::Running,
-                node: None,
-            })
-            .collect();
-
-        pods.insert(
-            wl_name.clone(),
-            SolverPod {
-                chips_per_replica: chips,
-                chip_type,
-                priority,
-                quota,
-                cluster: None,
-                statuses_by_replica,
-            },
-        );
-    }
-
-    let gang_sets = build_gang_sets(runtimes, config, store_workloads, &pods);
-
-    SolverRequest {
-        clusters: cluster_states,
-        pods,
-        gang_sets,
-        quotas: config.quotas.clone(),
-        time_limit: 30.0,
-    }
-}
-
-/// Build the [`SolverCluster`] (topology) and solver pods for a single cluster.
-///
-/// Job reflector provides job-level state (suspended, parallelism).
-/// Pod reflector provides per-replica node assignments and managed standalone
-/// Pods.
-pub(super) fn build_cluster_state(
-    node_store: &reflector::Store<Node>,
-    pod_store: &reflector::Store<Pod>,
-    job_store: &reflector::Store<K8sJob>,
-    cluster_name: &str,
-    config: &BinderConfig,
-    placement_shadow: &mut PlacementShadow,
-) -> (SolverCluster, HashMap<String, SolverPod>) {
-    let solver_nodes: Vec<SolverNode> = get_candidate_nodes(node_store, config)
-        .iter()
-        .map(|node| SolverNode {
-            name: node.name_any(),
-            chip_type: node
-                .labels()
-                .get(&config.chip_label)
-                .cloned()
-                .unwrap_or_default(),
-            chips: node_chip_capacity(node, config),
-        })
-        .collect();
-
-    let mut solver_pods: HashMap<String, SolverPod> = HashMap::new();
-
-    // --- Jobs on the cluster ---
-    for job in job_store.state() {
-        let job_name = match job.labels().get(&config.job_name_label) {
-            Some(name) => name.clone(),
-            None => job.name_any(),
-        };
-
-        // Skip terminal Jobs entirely. Without this, every completed/failed
-        // Job that hasn't been GC'd by k8s would be padded with phantom
-        // "Running/None" replicas (see build_replica_statuses_from_job_pods)
-        // and reach the solver/snapshot as zombie queued work.
-        if is_job_finished(&job) {
-            placement_shadow.remove(&job_name);
-            continue;
-        }
-
-        let (chips, chip_type, priority, quota, parallelism) = extract_job_metadata(&job, config);
-
-        if !is_known_quota(config, &quota) {
-            warn!(
-                workload = %job_name,
-                quota = %quota,
-                "skipping reflector-discovered Job with unknown quota"
-            );
-            placement_shadow.remove(&job_name);
-            continue;
-        }
-
-        // Footgun for kubectl-applied Jobs: if the pod template's
-        // schedulerName isn't ours, kube-scheduler will bind the pods and
-        // bypass our binder entirely. Warn so the operator notices.
-        // Mirrors the per-tick warn pattern of the unknown-quota check
-        // above; stops as soon as the manifest is fixed.
-        let template_scheduler = job
-            .spec
-            .as_ref()
-            .and_then(|s| s.template.spec.as_ref())
-            .and_then(|p| p.scheduler_name.as_deref());
-        if template_scheduler != Some(config.scheduler_name.as_str()) {
-            warn!(
-                workload = %job_name,
-                expected = %config.scheduler_name,
-                actual = ?template_scheduler,
-                "managed Job's pod template has wrong schedulerName; kube-scheduler will bind its pods, bypassing this scheduler"
-            );
-        }
-
-        let is_suspended = job.spec.as_ref().and_then(|s| s.suspend).unwrap_or(false);
-
-        // Three placement states for an active Job's pods, in priority order:
-        //   1. Pods bound to nodes (reflector-confirmed) — use their nodes.
-        //   2. Pending-nodes entry — placement decision in flight.
-        //   3. Neither — orphaned. Pods missed their binding window (bridge
-        //      restart, expired PENDING_TTL, etc.) and the solver has lost
-        //      track. Emit with cluster=None so the solver re-schedules.
-        let mut orphan = false;
-        let statuses_by_replica = if is_suspended {
-            // `spec.suspend=true` has been patched, but pods may still be
-            // terminating (graceful shutdown window, up to 30 s by default).
-            // Keep their nodes occupied in the solver's view until the pod
-            // store confirms they are gone — otherwise the solver may
-            // double-book those nodes.
-            if pods_exist_for_job(pod_store, &job) {
-                build_replica_statuses_from_job_pods(pod_store, &job, parallelism)
-            } else {
-                placement_shadow.remove(&job_name);
-                (0..parallelism)
-                    .map(|_| SolverReplicaStatus {
-                        phase: Phase::Suspended,
-                        node: None,
-                    })
-                    .collect()
-            }
-        } else if pods_exist_for_job(pod_store, &job) {
-            placement_shadow.remove(&job_name);
-            build_replica_statuses_from_job_pods(pod_store, &job, parallelism)
-        } else if let Some((node_counts, _, _)) = placement_shadow.get(&job_name) {
-            // Pods not yet visible but we know where they were placed.
-            // Reconstruct statuses from the recorded node assignments so
-            // those nodes appear occupied to the solver this cycle.
-            let mut s: Vec<SolverReplicaStatus> = node_counts
-                .iter()
-                .flat_map(|(node, &count)| {
-                    (0..count).map(move |_| SolverReplicaStatus {
-                        phase: Phase::Running,
-                        node: Some(node.clone()),
-                    })
-                })
-                .collect();
-            while (s.len() as u32) < parallelism {
-                s.push(SolverReplicaStatus {
-                    phase: Phase::Running,
-                    node: None,
-                });
-            }
-            s
-        } else {
-            // Orphan: no bound pods, no in-flight placement.  Emit as
-            // fresh-pending so the solver picks new nodes; the next cycle's
-            // bind_pending_pods will bind the existing Pending pods to them.
-            orphan = true;
-            (0..parallelism)
-                .map(|_| SolverReplicaStatus {
-                    phase: Phase::Running,
-                    node: None,
-                })
-                .collect()
-        };
-
-        solver_pods.insert(
-            job_name,
-            SolverPod {
-                chips_per_replica: chips,
-                chip_type,
-                priority,
-                quota,
-                cluster: if orphan {
-                    None
-                } else {
-                    Some(cluster_name.to_string())
-                },
-                statuses_by_replica,
-            },
-        );
-    }
-
-    // --- Managed standalone Pods on the cluster ---
-    for pod in pod_store.state() {
-        let is_managed = pod
-            .labels()
-            .get(&config.managed_by_label)
-            .map(|v| v == &config.managed_by_value)
-            .unwrap_or(false);
-        if !is_managed {
-            continue;
-        }
-
-        let owned_by_job = pod
-            .metadata
-            .owner_references
-            .as_ref()
-            .map(|refs| refs.iter().any(|r| r.kind == "Job"))
-            .unwrap_or(false);
-        if owned_by_job {
-            continue;
-        }
-
-        // Per the model.py contract, each k8s Pod becomes its own
-        // single-replica SolverPod — independently schedulable and
-        // reclaimable, no gang-scheduling.  This means the SolverPod key
-        // must be the k8s pod name, not the `job-name` label: a
-        // Deployment's ReplicaSet stamps the same `job-name` onto every
-        // replica's pod template (see deployment_driver.py), so keying
-        // by label would collapse N replicas into one entry and silently
-        // drop the rest from the solver's view.
-        //
-        // Aside: each replica adds one entry to the SolverRequest. Wire
-        // and solve cost scale with replicas × candidate-nodes, which is
-        // the same regardless of grouping — a 50-replica Deployment is
-        // 50 placement decisions either way.
-        let pod_name = pod.name_any();
-
-        // Defensive: skip if a Job has already claimed this name.  This
-        // is rare (would require a managed Pod whose name collides with
-        // a Job's `job-name` label value) but cheap to check.
-        if solver_pods.contains_key(&pod_name) {
-            continue;
-        }
-
-        let (chips, chip_type, priority, quota, _) = extract_pod_metadata(&pod, config);
-
-        if !is_known_quota(config, &quota) {
+        if is_managing && !is_known_quota(config, &quota) {
             warn!(
                 workload = %pod_name,
                 quota = %quota,
@@ -638,25 +464,35 @@ pub(super) fn build_cluster_state(
             .as_ref()
             .and_then(|s| s.phase.as_deref())
             .unwrap_or("Unknown");
-
         if phase == "Succeeded" || phase == "Failed" {
             continue;
         }
 
         let node_name = pod.spec.as_ref().and_then(|s| s.node_name.clone());
-        let solver_phase = Phase::Running;
 
-        // Cluster pinning: only set `cluster` once the Pod has actually
-        // landed on a node.  A Pending Pod (Deployment-spawned, not yet
-        // bound) needs the solver's admission step to consider it — and
-        // both the heuristic and MILP solvers gate admission on
-        // `pod.cluster is None`, so leaving cluster=Some on a Pending
-        // Pod silently drops it from placement.
-        //
-        // v0 assumption: this is safe because the bridge currently runs
-        // against one cluster.  Multi-cluster needs a real cluster-pinned
-        // pending category in the solver — the Pod can only be bound
-        // back to the cluster it lives on, regardless of solver choice.
+        // Drop pods landed on nodes outside the candidate set —
+        // observe mode only (same reasoning as the per-Job branch:
+        // solver mode needs to keep tracking orphaned managed pods).
+        if !is_managing
+            && let Some(node) = node_name.as_deref()
+            && !node_chip_type.contains_key(node)
+        {
+            continue;
+        }
+
+        if chip_type.is_empty()
+            && let Some(node) = node_name.as_deref()
+            && let Some(t) = node_chip_type.get(node)
+        {
+            chip_type = t.clone();
+        }
+
+        // Cluster pinning: only set once the Pod has actually landed
+        // on a node.  A Pending Pod (Deployment-spawned, not yet
+        // bound) needs the solver's admission step to consider it —
+        // and both solvers gate admission on `pod.cluster is None`,
+        // so leaving cluster=Some on a Pending Pod silently drops it
+        // from placement.
         let cluster = node_name.as_ref().map(|_| cluster_name.to_string());
 
         solver_pods.insert(
@@ -668,47 +504,51 @@ pub(super) fn build_cluster_state(
                 quota,
                 cluster,
                 statuses_by_replica: vec![SolverReplicaStatus {
-                    phase: solver_phase,
+                    phase: Phase::Running,
                     node: node_name,
                 }],
             },
         );
     }
 
-    // Clear pending entries for jobs that no longer exist on this cluster.
-    // When a job is deleted externally (e.g. by test cleanup or operator
-    // action) its pending entry is never touched by the job-processing loop
-    // above because the job has vanished from the reflector.  Without this
-    // cleanup the entry would linger for the full 30 s TTL, causing the
-    // injection loop in build_solver_request_multi to keep inserting a
-    // phantom running pod and blocking placement on those nodes.
+    // --- Placement-shadow cleanup (solver mode only) ---
     //
-    // Only entries targeting *this* cluster are cleaned up here; entries for
-    // other clusters are left intact.
-    let known_on_cluster: HashSet<String> = job_store
-        .state()
-        .into_iter()
-        .map(|job| {
-            job.labels()
-                .get(&config.job_name_label)
-                .cloned()
-                .unwrap_or_else(|| job.name_any())
-        })
-        .collect();
-    placement_shadow.retain(|name, (_, _, solver_pod)| {
-        let targets_this_cluster =
-            solver_pod.as_ref().and_then(|p| p.cluster.as_deref()) == Some(cluster_name);
-        if !targets_this_cluster {
-            return true;
-        }
-        if known_on_cluster.contains(name) {
-            return true;
-        }
-        if solver_pods.contains_key(name) {
-            return true;
-        }
-        false
-    });
+    // Drop entries for jobs that no longer exist on this cluster.
+    // When a job is deleted externally (e.g. operator action) its
+    // entry is never touched by the loop above because the job has
+    // vanished from the reflector.  Without this cleanup the entry
+    // would linger for the full PENDING_TTL, causing the injection
+    // loop in build_request_multi to keep inserting a phantom running
+    // pod and blocking placement on those nodes.
+    //
+    // Only entries targeting *this* cluster are cleaned up; entries
+    // for other clusters are left intact.
+    if let Some(shadow) = placement_shadow {
+        let known_on_cluster: HashSet<String> = job_store
+            .state()
+            .into_iter()
+            .map(|job| {
+                job.labels()
+                    .get(&config.job_name_label)
+                    .cloned()
+                    .unwrap_or_else(|| job.name_any())
+            })
+            .collect();
+        shadow.retain(|name, (_, _, solver_pod)| {
+            let targets_this_cluster =
+                solver_pod.as_ref().and_then(|p| p.cluster.as_deref()) == Some(cluster_name);
+            if !targets_this_cluster {
+                return true;
+            }
+            if known_on_cluster.contains(name) {
+                return true;
+            }
+            if solver_pods.contains_key(name) {
+                return true;
+            }
+            false
+        });
+    }
 
     let cluster = SolverCluster {
         name: cluster_name.to_string(),
@@ -838,28 +678,30 @@ fn build_replica_statuses_from_job_pods(
     statuses
 }
 
-/// Build gang sets from workload annotations.
+/// Build gang sets from gang-set annotations on observed workloads
+/// and (in solver mode) workloads still in the in-memory store.
 ///
-/// Workloads sharing the same `gang-set` annotation value form a gang set.
+/// Workloads sharing the same `gang-set` annotation value form a gang.
 fn build_gang_sets(
     runtimes: &[ClusterRuntime],
     config: &BinderConfig,
-    store_workloads: &HashMap<String, Workload>,
+    store_workloads: Option<&HashMap<String, Workload>>,
     known_pods: &HashMap<String, SolverPod>,
+    pod_predicate: impl Fn(&Pod) -> bool,
 ) -> Vec<Vec<String>> {
     let mut annotation_groups: HashMap<String, Vec<String>> = HashMap::new();
 
     for rt in runtimes {
         for job in rt.job_reader().state() {
-            let job_name = match job.labels().get(&config.job_name_label) {
-                Some(name) => name.clone(),
-                None => job.name_any(),
-            };
+            let job_name = job
+                .labels()
+                .get(&config.job_name_label)
+                .cloned()
+                .unwrap_or_else(|| job.name_any());
 
             if !known_pods.contains_key(&job_name) {
                 continue;
             }
-
             if let Some(gang_id) = job.annotations().get(&config.gang_set_annotation) {
                 annotation_groups
                     .entry(gang_id.clone())
@@ -869,12 +711,7 @@ fn build_gang_sets(
         }
 
         for pod in rt.pod_reader().state() {
-            let is_managed = pod
-                .labels()
-                .get(&config.managed_by_label)
-                .map(|v| v == &config.managed_by_value)
-                .unwrap_or(false);
-            if !is_managed {
+            if !pod_predicate(&pod) {
                 continue;
             }
             let owned_by_job = pod
@@ -887,11 +724,10 @@ fn build_gang_sets(
                 continue;
             }
 
-            // Match the SolverPod key used in build_cluster_state above:
+            // Match the SolverPod key used in build_cluster_state:
             // each managed standalone Pod is its own SolverPod, keyed
             // by k8s pod name.
             let pod_name = pod.name_any();
-
             if !known_pods.contains_key(&pod_name) {
                 continue;
             }
@@ -905,21 +741,27 @@ fn build_gang_sets(
         }
     }
 
-    for (wl_name, workload) in store_workloads {
-        if !known_pods.contains_key(wl_name) {
-            continue;
-        }
+    if let Some(store) = store_workloads {
+        for (wl_name, workload) in store {
+            if !known_pods.contains_key(wl_name) {
+                continue;
+            }
 
-        let gang_id = match &workload.managed {
-            ManagedObject::Job(job) => job.annotations().get(&config.gang_set_annotation).cloned(),
-            ManagedObject::Pod(pod) => pod.annotations().get(&config.gang_set_annotation).cloned(),
-        };
+            let gang_id = match &workload.managed {
+                ManagedObject::Job(job) => {
+                    job.annotations().get(&config.gang_set_annotation).cloned()
+                }
+                ManagedObject::Pod(pod) => {
+                    pod.annotations().get(&config.gang_set_annotation).cloned()
+                }
+            };
 
-        if let Some(gang_id) = gang_id {
-            annotation_groups
-                .entry(gang_id)
-                .or_default()
-                .push(wl_name.clone());
+            if let Some(gang_id) = gang_id {
+                annotation_groups
+                    .entry(gang_id)
+                    .or_default()
+                    .push(wl_name.clone());
+            }
         }
     }
 

@@ -583,11 +583,12 @@ pub async fn run(
             // "empty" frame (py-scheduler/scheduler/loop_runner.py:455).
             seq += 1;
             if let Some(ref snap) = snapshot_state {
-                let request = build_solver_request_multi(
+                let request = build_request_multi(
                     &runtimes,
                     config,
-                    &store_snapshot,
-                    &mut placement_shadow,
+                    Some(&store_snapshot),
+                    Some(&mut placement_shadow),
+                    is_managed_pod(config),
                 );
                 let frame = snapshot::build_frame(
                     seq,
@@ -617,8 +618,13 @@ pub async fn run(
             store_workloads = store_snapshot.len(),
             "building solver request"
         );
-        let request =
-            build_solver_request_multi(&runtimes, config, &store_snapshot, &mut placement_shadow);
+        let request = build_request_multi(
+            &runtimes,
+            config,
+            Some(&store_snapshot),
+            Some(&mut placement_shadow),
+            is_managed_pod(config),
+        );
 
         let request_pods = request.pods.len();
         let request_gangs = request.gang_sets.len();
@@ -834,7 +840,7 @@ pub async fn run_observe(
             was_unhealthy = false;
         }
 
-        let request = build_observed_request_multi(&runtimes, config);
+        let request = build_request_multi(&runtimes, config, None, None, |_| true);
 
         seq += 1;
         let frame = snapshot::build_frame(seq, snapshot_label, &request, None, None);
@@ -859,7 +865,7 @@ use extract::extract_workload_metadata;
 mod solver_request;
 #[cfg(test)]
 use solver_request::build_cluster_state;
-use solver_request::{build_observed_request_multi, build_solver_request_multi};
+use solver_request::{build_request_multi, is_managed_pod};
 
 mod diff;
 use diff::{ScheduleDiff, diff_schedule};
@@ -1461,7 +1467,8 @@ mod tests {
             &make_job_store(vec![job]),
             "cluster-a",
             &config,
-            &mut HashMap::new(),
+            Some(&mut HashMap::new()),
+            is_managed_pod(&config),
         );
 
         let statuses = &pods["wl-1"].statuses_by_replica;
@@ -1500,7 +1507,8 @@ mod tests {
             &make_job_store(vec![job]),
             "cluster-a",
             &config,
-            &mut pending,
+            Some(&mut pending),
+            is_managed_pod(&config),
         );
 
         assert!(
@@ -1542,7 +1550,8 @@ mod tests {
             &make_job_store(vec![job]),
             "cluster-a",
             &config,
-            &mut pending,
+            Some(&mut pending),
+            is_managed_pod(&config),
         );
 
         assert_eq!(
@@ -1582,7 +1591,8 @@ mod tests {
             &make_job_store(vec![job]),
             "cluster-a",
             &config,
-            &mut pending,
+            Some(&mut pending),
+            is_managed_pod(&config),
         );
 
         assert_eq!(
@@ -1710,7 +1720,8 @@ mod tests {
             &make_job_store(vec![job_a, job_b]),
             "cluster-a",
             &config,
-            &mut HashMap::new(),
+            Some(&mut HashMap::new()),
+            is_managed_pod(&config),
         );
 
         // job-A must report Suspended — it has no pods of its own.
@@ -1788,7 +1799,8 @@ mod tests {
             &make_job_store(vec![]),
             "cluster-a",
             &config,
-            &mut HashMap::new(),
+            Some(&mut HashMap::new()),
+            is_managed_pod(&config),
         );
 
         assert_eq!(
@@ -1850,7 +1862,8 @@ mod tests {
             &make_job_store(vec![job]),
             "cluster-a",
             &config,
-            &mut pending,
+            Some(&mut pending),
+            is_managed_pod(&config),
         );
 
         // Pending entry must still be used to mark node-042 as occupied.
@@ -1896,7 +1909,8 @@ mod tests {
             &make_job_store(vec![job]),
             "cluster-a",
             &config,
-            &mut pending,
+            Some(&mut pending),
+            is_managed_pod(&config),
         );
 
         assert_eq!(
@@ -1962,7 +1976,8 @@ mod tests {
             &make_job_store(vec![active, completed, failed]),
             "cluster-a",
             &config,
-            &mut HashMap::new(),
+            Some(&mut HashMap::new()),
+            is_managed_pod(&config),
         );
 
         assert!(pods.contains_key("wl-active"), "active Job must remain");
@@ -2011,7 +2026,8 @@ mod tests {
             &make_job_store(vec![succeeded, exhausted]),
             "cluster-a",
             &config,
-            &mut HashMap::new(),
+            Some(&mut HashMap::new()),
+            is_managed_pod(&config),
         );
 
         assert!(
@@ -2052,7 +2068,8 @@ mod tests {
             &make_job_store(vec![job]),
             "cluster-a",
             &config,
-            &mut pending,
+            Some(&mut pending),
+            is_managed_pod(&config),
         );
 
         assert!(!pods.contains_key("wl-1"));
@@ -2079,7 +2096,8 @@ mod tests {
             &make_job_store(vec![job]),
             "cluster-a",
             &config,
-            &mut HashMap::new(),
+            Some(&mut HashMap::new()),
+            is_managed_pod(&config),
         );
 
         let solver_pod = &pods["wl-1"];
@@ -2109,7 +2127,8 @@ mod tests {
             &make_job_store(vec![job]),
             "cluster-a",
             &config,
-            &mut HashMap::new(),
+            Some(&mut HashMap::new()),
+            is_managed_pod(&config),
         );
 
         assert_eq!(
@@ -2181,7 +2200,8 @@ mod tests {
             &make_job_store(vec![job]),
             "cluster-a",
             &config,
-            &mut shadow,
+            Some(&mut shadow),
+            is_managed_pod(&config),
         );
 
         let request_pod = request_pods
@@ -2254,7 +2274,8 @@ mod tests {
             &make_job_store(vec![job]),
             "cluster-a",
             &config,
-            &mut HashMap::new(),
+            Some(&mut HashMap::new()),
+            is_managed_pod(&config),
         );
 
         assert!(
@@ -2268,7 +2289,28 @@ mod tests {
     // -----------------------------------------------------------------------
     // observe-only mode tests
     // -----------------------------------------------------------------------
-    use solver_request::build_observed_cluster_state;
+    // Observe-mode tests call the unified builder with no
+    // placement_shadow and an accept-all pod predicate.
+    fn observe_call(
+        node_store: &reflector::Store<Node>,
+        pod_store: &reflector::Store<Pod>,
+        job_store: &reflector::Store<K8sJob>,
+        cluster_name: &str,
+        config: &BinderConfig,
+    ) -> (
+        crate::solver_types::ClusterState,
+        HashMap<String, crate::solver_types::Pod>,
+    ) {
+        build_cluster_state(
+            node_store,
+            pod_store,
+            job_store,
+            cluster_name,
+            config,
+            None,
+            |_| true,
+        )
+    }
 
     fn test_node(name: &str, chip_type: &str, chips: u32) -> Node {
         use k8s_openapi::api::core::v1::{NodeCondition, NodeStatus};
@@ -2345,7 +2387,7 @@ mod tests {
         };
         let pod = test_pod("user-pod-0", "uid-99", "node-1");
 
-        let (cluster, pods) = build_observed_cluster_state(
+        let (cluster, pods) = observe_call(
             &make_node_store(vec![test_node("node-1", "H100", 8)]),
             &make_pod_store(vec![pod]),
             &make_job_store(vec![job]),
@@ -2387,7 +2429,7 @@ mod tests {
             }),
         };
 
-        let (_cluster, pods) = build_observed_cluster_state(
+        let (_cluster, pods) = observe_call(
             &make_node_store(vec![test_node("node-1", "L40S", 4)]),
             &make_pod_store(vec![pod]),
             &make_job_store(vec![]),
@@ -2438,7 +2480,7 @@ mod tests {
             }),
         };
 
-        let (_cluster, pods) = build_observed_cluster_state(
+        let (_cluster, pods) = observe_call(
             &make_node_store(vec![test_node("node-known", "H200", 8)]),
             &make_pod_store(vec![pod_visible, pod_hidden]),
             &make_job_store(vec![]),
@@ -2529,7 +2571,7 @@ mod tests {
         };
         let user_job_pod = test_pod("user-job-0", "uid-user", "node-1");
 
-        let (_cluster, pods) = build_observed_cluster_state(
+        let (_cluster, pods) = observe_call(
             &make_node_store(vec![test_node("node-1", "H100", 8)]),
             &make_pod_store(vec![sys_pod, user_pod, user_job_pod]),
             &make_job_store(vec![sys_job, user_job]),
@@ -2580,7 +2622,7 @@ mod tests {
             ..Default::default()
         };
 
-        let (_cluster, pods) = build_observed_cluster_state(
+        let (_cluster, pods) = observe_call(
             &make_node_store(vec![test_node("node-1", "H100", 8)]),
             &make_pod_store(vec![]),
             &make_job_store(vec![job]),
@@ -2609,7 +2651,7 @@ mod tests {
             );
         }
         // Suspended Jobs have no live pods, so `cluster` is set via the
-        // is_suspended branch in build_observed_cluster_state.  The UI
+        // is_suspended branch in build_cluster_state.  The UI
         // uses this to scope the workload to a cluster.
         assert_eq!(
             p.cluster.as_deref(),
