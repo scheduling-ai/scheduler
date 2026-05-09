@@ -38,8 +38,13 @@ pub struct Frame {
     pub timestamp: String,
     pub scheduler: String,
     pub tick: u64,
-    pub solver_status: String,
-    pub solver_duration_ms: u64,
+    /// Solver outcome string (e.g. "ok/optimal").  Absent in observe-only
+    /// mode where no solver runs — the UI hides the badge when missing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub solver_status: Option<String>,
+    /// Wall-clock solve duration.  Absent in observe-only mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub solver_duration_ms: Option<u64>,
     pub clusters: Vec<ClusterState>,
     pub pods: HashMap<String, Pod>,
     pub gang_sets: Vec<Vec<String>>,
@@ -56,13 +61,14 @@ pub fn new_snapshot_state() -> SnapshotState {
 }
 
 /// Build a Frame from the solver request (input pods + clusters + quotas) and
-/// the solve outcome.
+/// the solve outcome.  Pass `None` for `solver_status`/`solver_duration_ms`
+/// in observe-only mode where no solver runs.
 pub fn build_frame(
     seq: u64,
     scheduler: &str,
     request: &SolverRequest,
-    solver_status: &str,
-    solver_duration_ms: u64,
+    solver_status: Option<&str>,
+    solver_duration_ms: Option<u64>,
 ) -> Frame {
     let nodes: Vec<String> = request
         .clusters
@@ -79,7 +85,7 @@ pub fn build_frame(
             .unwrap_or_default(),
         scheduler: scheduler.to_string(),
         tick: seq,
-        solver_status: solver_status.to_string(),
+        solver_status: solver_status.map(str::to_string),
         solver_duration_ms,
         clusters: request.clusters.clone(),
         pods: request.pods.clone(),
@@ -213,7 +219,7 @@ mod tests {
             quotas: vec![],
             time_limit: 30.0,
         };
-        let frame = build_frame(42, "milp", &req, "optimal", 123);
+        let frame = build_frame(42, "milp", &req, Some("optimal"), Some(123));
         let v: serde_json::Value = serde_json::to_value(&frame).unwrap();
         for key in [
             "seq",
@@ -235,5 +241,27 @@ mod tests {
         assert_eq!(v["seq"], 42);
         assert_eq!(v["scheduler"], "milp");
         assert_eq!(v["solver_status"], "optimal");
+    }
+
+    #[test]
+    fn frame_omits_solver_fields_in_observe_mode() {
+        let req = SolverRequest {
+            clusters: vec![],
+            pods: HashMap::new(),
+            gang_sets: vec![],
+            quotas: vec![],
+            time_limit: 30.0,
+        };
+        let frame = build_frame(7, "observed", &req, None, None);
+        let v: serde_json::Value = serde_json::to_value(&frame).unwrap();
+        assert!(
+            v.get("solver_status").is_none(),
+            "solver_status should be omitted"
+        );
+        assert!(
+            v.get("solver_duration_ms").is_none(),
+            "solver_duration_ms should be omitted"
+        );
+        assert_eq!(v["scheduler"], "observed");
     }
 }

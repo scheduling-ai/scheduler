@@ -92,6 +92,19 @@ pub struct BinderConfig {
     pub quotas: Vec<crate::solver_types::Quota>,
     /// Python solver to use (e.g. "heuristic").
     pub solver_name: String,
+    /// If false, consider all Ready, non-cordoned nodes as candidates
+    /// (regardless of taint).  Used by observe-only mode where we want
+    /// to surface every node the bridge can see, not just the GPU pool
+    /// reserved for our scheduler.
+    pub require_taint: bool,
+    /// If true, the Job reflector watches *all* Jobs (no label selector).
+    /// Solver mode keeps this false so we only reflect Jobs we manage.
+    pub observe_all_jobs: bool,
+    /// Namespaces to skip in observe mode.  Pods/Jobs in these namespaces
+    /// are dropped from the snapshot.  Used to suppress infrastructure
+    /// (kube-system, kueue-system, ...) so the UI shows user workloads
+    /// only.  Empty in solver mode (no-op).
+    pub excluded_namespaces: Vec<String>,
 }
 
 impl Default for BinderConfig {
@@ -113,6 +126,9 @@ impl Default for BinderConfig {
             solver_interval: Duration::from_secs(5),
             quotas: vec![],
             solver_name: "heuristic".into(),
+            require_taint: true,
+            observe_all_jobs: false,
+            excluded_namespaces: vec![],
         }
     }
 }
@@ -266,7 +282,18 @@ async fn init_cluster(
         let shared = Arc::clone(&job_shared);
         let flag = Arc::clone(&jobs_healthy);
         let cluster_name = name.clone();
-        let label_selector = format!("{}={}", config.managed_by_label, config.managed_by_value);
+        // Solver mode reflects only Jobs we manage (label-selector for
+        // server-side filtering — saves bandwidth on busy clusters).
+        // Observe-only mode reflects every Job so the UI can render any
+        // workload running on the cluster, regardless of who owns it.
+        let label_selector = if config.observe_all_jobs {
+            None
+        } else {
+            Some(format!(
+                "{}={}",
+                config.managed_by_label, config.managed_by_value
+            ))
+        };
         tokio::spawn(run_reflector_with_retry(
             cluster_name,
             "job",
@@ -275,7 +302,10 @@ async fn init_cluster(
             job_writer,
             move || {
                 let api: Api<K8sJob> = Api::all(client.clone());
-                let wc = watcher::Config::default().labels(&label_selector);
+                let wc = match label_selector.as_ref() {
+                    Some(sel) => watcher::Config::default().labels(sel),
+                    None => watcher::Config::default(),
+                };
                 watcher(api, wc)
             },
         ));
@@ -559,7 +589,13 @@ pub async fn run(
                     &store_snapshot,
                     &mut placement_shadow,
                 );
-                let frame = snapshot::build_frame(seq, &config.solver_name, &request, "empty", 0);
+                let frame = snapshot::build_frame(
+                    seq,
+                    &config.solver_name,
+                    &request,
+                    Some("empty"),
+                    Some(0),
+                );
                 *snap.lock().await = Some(frame);
             }
             info!(
@@ -619,8 +655,8 @@ pub async fn run(
                 seq,
                 &config.solver_name,
                 &request,
-                &solver_status,
-                duration_ms,
+                Some(solver_status.as_str()),
+                Some(duration_ms),
             );
             *snap.lock().await = Some(frame);
         }
@@ -744,6 +780,75 @@ pub async fn run(
     }
 }
 
+/// Observe-only loop: reflect cluster state, build a snapshot, publish it
+/// for the UI to poll.  No solver, no binder, no workload store.
+///
+/// Used to drive the same UI against a cluster scheduled by something else
+/// (e.g. Kueue + kube-scheduler), so that we share the entire snapshot
+/// pipeline between solver mode and observer mode.
+pub async fn run_observe(
+    clusters: &[ClusterSpec],
+    config: &BinderConfig,
+    snapshot_state: SnapshotState,
+    snapshot_label: &str,
+) -> Result<()> {
+    anyhow::ensure!(
+        !clusters.is_empty(),
+        "at least one cluster must be specified"
+    );
+
+    let mut runtimes: Vec<ClusterRuntime> = Vec::with_capacity(clusters.len());
+    for spec in clusters {
+        let rt = init_cluster(spec.name.clone(), spec.context.as_deref(), config).await?;
+        runtimes.push(rt);
+    }
+
+    info!(
+        clusters = runtimes.len(),
+        scheduler = snapshot_label,
+        "observe-only loop started"
+    );
+
+    let mut interval = tokio::time::interval(config.solver_interval);
+    let mut seq: u64 = 0;
+    let mut was_unhealthy = false;
+    loop {
+        interval.tick().await;
+
+        let unhealthy: Vec<&str> = runtimes
+            .iter()
+            .filter(|rt| {
+                !rt.nodes_healthy.load(Ordering::Acquire)
+                    || !rt.pods_healthy.load(Ordering::Acquire)
+                    || !rt.jobs_healthy.load(Ordering::Acquire)
+            })
+            .map(|rt| rt.name.as_str())
+            .collect();
+        if !unhealthy.is_empty() {
+            warn!(clusters = ?unhealthy, "reflectors unhealthy, skipping snapshot");
+            was_unhealthy = true;
+            continue;
+        }
+        if was_unhealthy {
+            info!("reflectors recovered, resuming snapshot loop");
+            was_unhealthy = false;
+        }
+
+        let request = build_observed_request_multi(&runtimes, config);
+
+        seq += 1;
+        let frame = snapshot::build_frame(seq, snapshot_label, &request, None, None);
+        info!(
+            seq,
+            pods = frame.pods.len(),
+            clusters = frame.clusters.len(),
+            nodes = frame.nodes.len(),
+            "observe snapshot built"
+        );
+        *snapshot_state.lock().await = Some(frame);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Submodules
 // ---------------------------------------------------------------------------
@@ -754,7 +859,7 @@ use extract::extract_workload_metadata;
 mod solver_request;
 #[cfg(test)]
 use solver_request::build_cluster_state;
-use solver_request::build_solver_request_multi;
+use solver_request::{build_observed_request_multi, build_solver_request_multi};
 
 mod diff;
 use diff::{ScheduleDiff, diff_schedule};
@@ -2157,6 +2262,194 @@ mod tests {
             "Job must still surface in the SolverRequest so its capacity \
              usage is accounted for, even when kube-scheduler is binding \
              its pods"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // observe-only mode tests
+    // -----------------------------------------------------------------------
+    use solver_request::build_observed_cluster_state;
+
+    fn test_node(name: &str, chip_type: &str, chips: u32) -> Node {
+        use k8s_openapi::api::core::v1::{NodeCondition, NodeStatus};
+        use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
+        Node {
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                labels: Some(
+                    [(
+                        BinderConfig::default().chip_label.clone(),
+                        chip_type.to_string(),
+                    )]
+                    .into_iter()
+                    .collect(),
+                ),
+                ..Default::default()
+            },
+            spec: None,
+            status: Some(NodeStatus {
+                allocatable: Some(
+                    [(
+                        BinderConfig::default().chip_resource.clone(),
+                        Quantity(chips.to_string()),
+                    )]
+                    .into_iter()
+                    .collect(),
+                ),
+                conditions: Some(vec![NodeCondition {
+                    type_: "Ready".to_string(),
+                    status: "True".to_string(),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }),
+        }
+    }
+
+    fn make_node_store(nodes: Vec<Node>) -> reflector::Store<Node> {
+        let mut writer: reflector::store::Writer<Node> = reflector::store::Writer::default();
+        for n in nodes {
+            writer.apply_watcher_event(&watcher::Event::Apply(n));
+        }
+        writer.as_reader()
+    }
+
+    fn observe_config() -> BinderConfig {
+        BinderConfig {
+            require_taint: false,
+            observe_all_jobs: true,
+            ..BinderConfig::default()
+        }
+    }
+
+    /// In observe mode, an unmanaged Job (no scheduler-name labels at all)
+    /// must still surface in the snapshot.
+    #[test]
+    fn observe_picks_up_unmanaged_job() {
+        let config = observe_config();
+        // Job with NO labels other than what k8s adds — this is what an
+        // arbitrary user-applied or Kueue-admitted Job looks like.
+        let job = K8sJob {
+            metadata: ObjectMeta {
+                name: Some("user-job".to_string()),
+                uid: Some("uid-99".to_string()),
+                ..Default::default()
+            },
+            spec: Some(JobSpec {
+                suspend: Some(false),
+                parallelism: Some(1),
+                template: PodTemplateSpec::default(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let pod = test_pod("user-pod-0", "uid-99", "node-1");
+
+        let (cluster, pods) = build_observed_cluster_state(
+            &make_node_store(vec![test_node("node-1", "H100", 8)]),
+            &make_pod_store(vec![pod]),
+            &make_job_store(vec![job]),
+            "cluster-a",
+            &config,
+        );
+
+        assert_eq!(cluster.nodes.len(), 1);
+        assert!(
+            pods.contains_key("user-job"),
+            "unmanaged Job must surface in observe snapshot"
+        );
+        let p = &pods["user-job"];
+        assert_eq!(p.statuses_by_replica.len(), 1);
+        assert_eq!(p.statuses_by_replica[0].node.as_deref(), Some("node-1"));
+        // chip_type was not on the Job — observe mode falls back to the
+        // node label.
+        assert_eq!(p.chip_type, "H100");
+        assert_eq!(p.cluster.as_deref(), Some("cluster-a"));
+    }
+
+    /// A standalone Pod scheduled by kube-scheduler (no Job owner) must
+    /// surface in observe mode.
+    #[test]
+    fn observe_picks_up_standalone_pod() {
+        let config = observe_config();
+        let pod = Pod {
+            metadata: ObjectMeta {
+                name: Some("loose-pod".to_string()),
+                ..Default::default()
+            },
+            spec: Some(PodSpec {
+                node_name: Some("node-1".to_string()),
+                ..Default::default()
+            }),
+            status: Some(PodStatus {
+                phase: Some("Running".to_string()),
+                ..Default::default()
+            }),
+        };
+
+        let (_cluster, pods) = build_observed_cluster_state(
+            &make_node_store(vec![test_node("node-1", "L40S", 4)]),
+            &make_pod_store(vec![pod]),
+            &make_job_store(vec![]),
+            "cluster-a",
+            &config,
+        );
+
+        assert!(pods.contains_key("loose-pod"));
+        assert_eq!(pods["loose-pod"].chip_type, "L40S");
+        assert_eq!(
+            pods["loose-pod"].statuses_by_replica[0].node.as_deref(),
+            Some("node-1")
+        );
+    }
+
+    /// Pods bound to nodes outside our candidate set are dropped (we
+    /// can't render them).  Important: the rest of the snapshot must
+    /// still come through.
+    #[test]
+    fn observe_drops_pods_on_unknown_nodes() {
+        let config = observe_config();
+        let pod_visible = Pod {
+            metadata: ObjectMeta {
+                name: Some("visible".to_string()),
+                ..Default::default()
+            },
+            spec: Some(PodSpec {
+                node_name: Some("node-known".to_string()),
+                ..Default::default()
+            }),
+            status: Some(PodStatus {
+                phase: Some("Running".to_string()),
+                ..Default::default()
+            }),
+        };
+        let pod_hidden = Pod {
+            metadata: ObjectMeta {
+                name: Some("hidden".to_string()),
+                ..Default::default()
+            },
+            spec: Some(PodSpec {
+                node_name: Some("node-unknown".to_string()),
+                ..Default::default()
+            }),
+            status: Some(PodStatus {
+                phase: Some("Running".to_string()),
+                ..Default::default()
+            }),
+        };
+
+        let (_cluster, pods) = build_observed_cluster_state(
+            &make_node_store(vec![test_node("node-known", "H200", 8)]),
+            &make_pod_store(vec![pod_visible, pod_hidden]),
+            &make_job_store(vec![]),
+            "cluster-a",
+            &config,
+        );
+
+        assert!(pods.contains_key("visible"));
+        assert!(
+            !pods.contains_key("hidden"),
+            "pod on a node outside the candidate set must be dropped"
         );
     }
 }

@@ -124,7 +124,61 @@ enum Command {
         #[arg(long, env = "DATABASE_URL")]
         database_url: String,
     },
-    /// Observe cluster events in real time.
+    /// Observe-only HTTP service: reflect cluster state, publish a Frame
+    /// snapshot at `GET /snapshot`, no scheduling decisions taken.
+    ///
+    /// Used to drive the existing UI against a cluster scheduled by
+    /// something else (Kueue + kube-scheduler, vanilla k8s).  The same
+    /// snapshot pipeline as `serve` runs underneath — minus the solver
+    /// subprocess and the binder.
+    ServeObserve {
+        /// Clusters to observe (same name:context format as `serve`).
+        #[arg(long = "cluster", required = true)]
+        clusters: Vec<String>,
+        /// Node label key for chip/accelerator type.
+        #[arg(long, default_value = "accelerator")]
+        chip_label: String,
+        /// Resource name for chip/GPU capacity.
+        #[arg(long, default_value = "nvidia.com/gpu")]
+        chip_resource: String,
+        /// If set, read per-node chip count from this node label instead
+        /// of the extended resource.
+        #[arg(long)]
+        chip_count_label: Option<String>,
+        /// If set, read per-replica chip count from this annotation as a
+        /// fallback when `resources.requests[chip_resource]` is missing.
+        #[arg(long)]
+        chips_annotation: Option<String>,
+        /// Restrict candidate nodes to those carrying this taint.  Off by
+        /// default in observe mode — we surface every Ready node.
+        #[arg(long)]
+        require_taint: bool,
+        /// Taint key (only used when `--require-taint` is set).
+        #[arg(long, default_value = "scheduler")]
+        taint_key: String,
+        /// Taint value (only used when `--require-taint` is set).
+        #[arg(long, default_value = "custom")]
+        taint_value: String,
+        /// Port for the HTTP API server.
+        #[arg(long, default_value = "8080")]
+        port: u16,
+        /// Snapshot interval (seconds).
+        #[arg(long, default_value = "5")]
+        interval_seconds: u64,
+        /// String written into `Frame.scheduler` so the UI can label the
+        /// source.  Defaults to "observed".
+        #[arg(long, default_value = "observed")]
+        snapshot_label: String,
+        /// Namespaces to exclude from the snapshot.  Defaults to the
+        /// usual K8s/Kueue infrastructure so the UI shows user
+        /// workloads only.  Pass an empty value to include everything.
+        #[arg(
+            long = "exclude-namespace",
+            default_values_t = ["kube-system".to_string(), "kube-public".to_string(), "kube-node-lease".to_string(), "local-path-storage".to_string(), "kueue-system".to_string()]
+        )]
+        exclude_namespaces: Vec<String>,
+    },
+    /// Observe cluster events in real time (diagnostic CLI).
     Observe {
         /// Resource type to watch.
         #[arg(long, default_value = "pods")]
@@ -300,6 +354,60 @@ async fn main() -> anyhow::Result<()> {
                     Some(scheduler_state),
                     Some(snapshot_state),
                     record,
+                ) => {
+                    res
+                }
+            }
+        }
+        Command::ServeObserve {
+            clusters,
+            chip_label,
+            chip_resource,
+            chip_count_label,
+            chips_annotation,
+            require_taint,
+            taint_key,
+            taint_value,
+            port,
+            interval_seconds,
+            snapshot_label,
+            exclude_namespaces,
+        } => {
+            let cluster_specs = parse_cluster_specs(&clusters);
+            // Drop empty entries so `--exclude-namespace ""` clears the
+            // default list rather than treating empty as a real ns name.
+            let excluded_namespaces: Vec<String> = exclude_namespaces
+                .into_iter()
+                .filter(|ns| !ns.is_empty())
+                .collect();
+            let config = binder::BinderConfig {
+                chip_label,
+                chip_resource,
+                chip_count_label,
+                chips_annotation,
+                taint_key,
+                taint_value,
+                require_taint,
+                observe_all_jobs: true,
+                excluded_namespaces,
+                solver_interval: std::time::Duration::from_secs(interval_seconds),
+                ..binder::BinderConfig::default()
+            };
+
+            let snapshot_state = snapshot::new_snapshot_state();
+            let app = api::snapshot_router(snapshot_state.clone());
+            let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
+            tracing::info!(port, "observe HTTP API listening");
+
+            tokio::select! {
+                res = axum::serve(listener, app) => {
+                    res.map_err(|e| anyhow::anyhow!("HTTP server error: {e}"))
+                }
+                res = binder::run_observe(
+                    &cluster_specs,
+                    &config,
+                    snapshot_state,
+                    &snapshot_label,
                 ) => {
                     res
                 }

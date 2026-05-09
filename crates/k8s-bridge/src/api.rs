@@ -33,6 +33,25 @@ struct AppState {
     quota_annotation: String,
 }
 
+/// Build a minimal router for observe-only mode: just `/snapshot`.
+/// No workload submission, no scheduler-state queries, no DB.
+pub fn snapshot_router(snapshot: SnapshotState) -> Router {
+    Router::new()
+        .route("/snapshot", get(get_snapshot_only))
+        .with_state(snapshot)
+}
+
+async fn get_snapshot_only(
+    State(snapshot): State<SnapshotState>,
+) -> Result<Json<Frame>, StatusCode> {
+    snapshot
+        .lock()
+        .await
+        .clone()
+        .map(Json)
+        .ok_or(StatusCode::NOT_FOUND)
+}
+
 /// Build the axum router.
 pub fn router(
     store: WorkloadStore,

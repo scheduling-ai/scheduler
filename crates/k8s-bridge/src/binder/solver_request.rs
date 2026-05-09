@@ -30,6 +30,304 @@ use super::extract::{
 };
 use super::{BinderConfig, ClusterRuntime, PlacementShadow};
 
+/// Build a [`SolverRequest`]-shaped snapshot for observe-only mode.
+///
+/// The snapshot describes everything we can see across all clusters:
+/// every Ready node and every active pod/job, regardless of who scheduled
+/// them.  No solver runs, nothing is bound — this exists purely to feed
+/// the UI's per-node grid when the bridge is being used as a passive
+/// observer (e.g. against a Kueue-managed cluster).
+///
+/// Differs from [`build_solver_request_multi`] in three ways:
+///   * No `placement_shadow`: nothing is in-flight because nothing is
+///     being placed.
+///   * No `WorkloadStore`: queued workloads belong to whoever runs the
+///     real scheduler.
+///   * No quota filtering: we surface whatever annotation is present
+///     (or "default") rather than dropping unknown-quota workloads.
+pub(super) fn build_observed_request_multi(
+    runtimes: &[ClusterRuntime],
+    config: &BinderConfig,
+) -> SolverRequest {
+    let mut cluster_states: Vec<SolverCluster> = Vec::with_capacity(runtimes.len());
+    let mut pods: HashMap<String, SolverPod> = HashMap::new();
+
+    for rt in runtimes {
+        let node_r = rt.node_reader();
+        let pod_r = rt.pod_reader();
+        let job_r = rt.job_reader();
+        let (cluster, cluster_pods) =
+            build_observed_cluster_state(&node_r, &pod_r, &job_r, &rt.name, config);
+        cluster_states.push(cluster);
+
+        for (name, pod) in cluster_pods {
+            pods.entry(name).or_insert(pod);
+        }
+    }
+
+    let gang_sets = build_observed_gang_sets(runtimes, config, &pods);
+
+    SolverRequest {
+        clusters: cluster_states,
+        pods,
+        gang_sets,
+        quotas: config.quotas.clone(),
+        time_limit: 0.0,
+    }
+}
+
+/// Per-cluster observe-mode snapshot.  Pure function over the reflector
+/// stores; no shared mutable state.
+pub(super) fn build_observed_cluster_state(
+    node_store: &reflector::Store<Node>,
+    pod_store: &reflector::Store<Pod>,
+    job_store: &reflector::Store<K8sJob>,
+    cluster_name: &str,
+    config: &BinderConfig,
+) -> (SolverCluster, HashMap<String, SolverPod>) {
+    let solver_nodes: Vec<SolverNode> = get_candidate_nodes(node_store, config)
+        .iter()
+        .map(|node| SolverNode {
+            name: node.name_any(),
+            chip_type: node
+                .labels()
+                .get(&config.chip_label)
+                .cloned()
+                .unwrap_or_default(),
+            chips: node_chip_capacity(node, config),
+        })
+        .collect();
+
+    // Index nodes by name for chip_type fallback when a pod's owning
+    // workload doesn't carry the chip-type label (typical for Kueue
+    // jobs — flavor info isn't on the Job, only on the assigned Node).
+    let node_chip_type: HashMap<String, String> = solver_nodes
+        .iter()
+        .map(|n| (n.name.clone(), n.chip_type.clone()))
+        .collect();
+
+    let mut solver_pods: HashMap<String, SolverPod> = HashMap::new();
+
+    let excluded_ns: HashSet<&str> = config
+        .excluded_namespaces
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let in_excluded_ns =
+        |ns: Option<&str>| -> bool { ns.map(|n| excluded_ns.contains(n)).unwrap_or(false) };
+
+    for job in job_store.state() {
+        if in_excluded_ns(job.metadata.namespace.as_deref()) {
+            continue;
+        }
+        if is_job_finished(&job) {
+            continue;
+        }
+
+        let job_name = job
+            .labels()
+            .get(&config.job_name_label)
+            .cloned()
+            .unwrap_or_else(|| job.name_any());
+
+        let (chips, mut chip_type, priority, quota, parallelism) =
+            extract_job_metadata(&job, config);
+
+        let is_suspended = job.spec.as_ref().and_then(|s| s.suspend).unwrap_or(false);
+
+        let statuses_by_replica: Vec<SolverReplicaStatus> = if is_suspended {
+            (0..parallelism)
+                .map(|_| SolverReplicaStatus {
+                    phase: Phase::Suspended,
+                    node: None,
+                })
+                .collect()
+        } else {
+            let mut s = build_replica_statuses_from_job_pods(pod_store, &job, parallelism);
+            // Derive chip_type from the assigned node when the workload
+            // didn't carry the chip-type label.  Common for non-managed
+            // workloads on a heterogeneous cluster.
+            if chip_type.is_empty() {
+                for status in &s {
+                    if let Some(node) = status.node.as_deref()
+                        && let Some(t) = node_chip_type.get(node)
+                        && !t.is_empty()
+                    {
+                        chip_type = t.clone();
+                        break;
+                    }
+                }
+            }
+            // Drop replicas that landed on nodes outside our candidate set
+            // (we can't render them on the per-cluster grid).
+            s.retain(|r| match r.node.as_deref() {
+                Some(node) => node_chip_type.contains_key(node),
+                None => true,
+            });
+            s
+        };
+
+        if statuses_by_replica.is_empty() {
+            continue;
+        }
+
+        // Cluster pinning: only when at least one replica has actually
+        // landed on a known node in this cluster.  Pending workloads stay
+        // unpinned so the UI's per-cluster aggregation doesn't double-
+        // count them across clusters.
+        let cluster = if statuses_by_replica
+            .iter()
+            .any(|r| r.node.is_some() && r.phase != Phase::Suspended)
+            || is_suspended
+        {
+            Some(cluster_name.to_string())
+        } else {
+            None
+        };
+
+        solver_pods.insert(
+            job_name,
+            SolverPod {
+                chips_per_replica: chips,
+                chip_type,
+                priority,
+                quota,
+                cluster,
+                statuses_by_replica,
+            },
+        );
+    }
+
+    // Standalone pods (no Job owner).  Skip pods owned by a Job — they
+    // are accounted for under the Job above.
+    for pod in pod_store.state() {
+        if in_excluded_ns(pod.metadata.namespace.as_deref()) {
+            continue;
+        }
+        let owned_by_job = pod
+            .metadata
+            .owner_references
+            .as_ref()
+            .map(|refs| refs.iter().any(|r| r.kind == "Job"))
+            .unwrap_or(false);
+        if owned_by_job {
+            continue;
+        }
+
+        let phase = pod
+            .status
+            .as_ref()
+            .and_then(|s| s.phase.as_deref())
+            .unwrap_or("Unknown");
+        if phase == "Succeeded" || phase == "Failed" {
+            continue;
+        }
+
+        let pod_name = pod.name_any();
+        if solver_pods.contains_key(&pod_name) {
+            continue;
+        }
+
+        let (chips, mut chip_type, priority, quota, _) = extract_pod_metadata(&pod, config);
+        let node_name = pod.spec.as_ref().and_then(|s| s.node_name.clone());
+
+        // Drop pods landed on nodes outside the candidate set — we can't
+        // render them.  Pending pods (no node yet) stay in the snapshot
+        // so the UI shows them as queued.
+        if let Some(node) = node_name.as_deref()
+            && !node_chip_type.contains_key(node)
+        {
+            continue;
+        }
+
+        if chip_type.is_empty()
+            && let Some(node) = node_name.as_deref()
+            && let Some(t) = node_chip_type.get(node)
+        {
+            chip_type = t.clone();
+        }
+
+        let cluster = node_name.as_ref().map(|_| cluster_name.to_string());
+
+        solver_pods.insert(
+            pod_name,
+            SolverPod {
+                chips_per_replica: chips,
+                chip_type,
+                priority,
+                quota,
+                cluster,
+                statuses_by_replica: vec![SolverReplicaStatus {
+                    phase: Phase::Running,
+                    node: node_name,
+                }],
+            },
+        );
+    }
+
+    let cluster = SolverCluster {
+        name: cluster_name.to_string(),
+        nodes: solver_nodes,
+    };
+
+    (cluster, solver_pods)
+}
+
+/// Gang sets for observe mode: derive purely from the gang-set annotation
+/// on observed Jobs/Pods.  No workload store to consult.
+fn build_observed_gang_sets(
+    runtimes: &[ClusterRuntime],
+    config: &BinderConfig,
+    known_pods: &HashMap<String, SolverPod>,
+) -> Vec<Vec<String>> {
+    let mut groups: HashMap<String, Vec<String>> = HashMap::new();
+
+    for rt in runtimes {
+        for job in rt.job_reader().state() {
+            let name = job
+                .labels()
+                .get(&config.job_name_label)
+                .cloned()
+                .unwrap_or_else(|| job.name_any());
+            if !known_pods.contains_key(&name) {
+                continue;
+            }
+            if let Some(gang_id) = job.annotations().get(&config.gang_set_annotation) {
+                groups.entry(gang_id.clone()).or_default().push(name);
+            }
+        }
+
+        for pod in rt.pod_reader().state() {
+            let owned_by_job = pod
+                .metadata
+                .owner_references
+                .as_ref()
+                .map(|refs| refs.iter().any(|r| r.kind == "Job"))
+                .unwrap_or(false);
+            if owned_by_job {
+                continue;
+            }
+            let pod_name = pod.name_any();
+            if !known_pods.contains_key(&pod_name) {
+                continue;
+            }
+            if let Some(gang_id) = pod.annotations().get(&config.gang_set_annotation) {
+                groups.entry(gang_id.clone()).or_default().push(pod_name);
+            }
+        }
+    }
+
+    let mut sets: Vec<Vec<String>> = groups
+        .into_values()
+        .filter(|members| members.len() > 1)
+        .collect();
+    for set in &mut sets {
+        set.sort();
+        set.dedup();
+    }
+    sets
+}
+
 /// Build a [`SolverRequest`] aggregating state from all clusters and the
 /// workload store.
 pub(super) fn build_solver_request_multi(
@@ -666,7 +964,13 @@ pub(super) fn node_chip_capacity(node: &Node, config: &BinderConfig) -> u32 {
         .unwrap_or(0)
 }
 
-/// Return nodes that have our taint.
+/// Return Ready, non-cordoned nodes that match the bridge's filter.
+///
+/// Solver mode (`config.require_taint == true`) returns only nodes that
+/// carry our scheduler taint — the GPU pool reserved for us.  Observe-only
+/// mode (`require_taint == false`) returns every Ready node, since the UI
+/// is showing whatever workloads happen to be on the cluster, not what
+/// we're allowed to schedule onto.
 pub(super) fn get_candidate_nodes(
     store: &reflector::Store<Node>,
     config: &BinderConfig,
@@ -675,19 +979,21 @@ pub(super) fn get_candidate_nodes(
         .state()
         .into_iter()
         .filter(|node| {
-            let taints = node
-                .spec
-                .as_ref()
-                .and_then(|s| s.taints.as_ref())
-                .map(|t| t.as_slice())
-                .unwrap_or_default();
-            let has_taint = taints.iter().any(|t| {
-                t.key == config.taint_key
-                    && t.value.as_deref() == Some(&config.taint_value)
-                    && t.effect == "NoSchedule"
-            });
-            if !has_taint {
-                return false;
+            if config.require_taint {
+                let taints = node
+                    .spec
+                    .as_ref()
+                    .and_then(|s| s.taints.as_ref())
+                    .map(|t| t.as_slice())
+                    .unwrap_or_default();
+                let has_taint = taints.iter().any(|t| {
+                    t.key == config.taint_key
+                        && t.value.as_deref() == Some(&config.taint_value)
+                        && t.effect == "NoSchedule"
+                });
+                if !has_taint {
+                    return false;
+                }
             }
 
             // Skip cordoned nodes (on-call team marks bad hardware this way).
