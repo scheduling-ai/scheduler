@@ -1453,10 +1453,20 @@ mod tests {
         }
     }
 
-    /// Gap 1: spec.suspend=true is set, but the pod is still in the pod store
-    /// (terminating). Nodes must remain occupied.
+    /// `spec.suspend=true` is set; child pod is still in the pod store
+    /// (terminating).  Replicas must surface as `Phase::Suspended` so the
+    /// Python solver classifies the workload as `suspended_pods` and can
+    /// re-admit it when capacity frees.  Earlier this returned the
+    /// terminating pod's k8s phase verbatim — when kubelet had already
+    /// SIGKILL'd the container, that was `Failed`, the workload landed
+    /// in `passthrough_pods`, and the bridge never unsuspended it.  See
+    /// `test_preempted_job_unsuspends_when_capacity_frees`.
+    ///
+    /// Capacity is briefly over-counted while the terminating pod still
+    /// holds chips; kubelet rejects any new pod that races onto the same
+    /// node until the old one is fully gone, so it self-corrects.
     #[test]
-    fn suspended_job_with_terminating_pod_keeps_node_occupied() {
+    fn suspended_job_reports_suspended_even_with_terminating_pod() {
         let config = BinderConfig::default();
         let job = test_job("uid-1", true, 1, &config);
         let pod = test_pod("pod-0", "uid-1", "node-042");
@@ -1475,10 +1485,14 @@ mod tests {
         assert_eq!(statuses.len(), 1);
         assert_eq!(
             statuses[0].phase,
-            Phase::Running,
-            "terminating pod must still appear Running so its node stays occupied"
+            Phase::Suspended,
+            "suspended Job must report Phase::Suspended regardless of \
+             pod-store state — solver classification depends on it"
         );
-        assert_eq!(statuses[0].node.as_deref(), Some("node-042"));
+        assert!(
+            statuses[0].node.is_none(),
+            "Phase::Suspended carries no node — suspended_pods don't use it"
+        );
     }
 
     /// Gap 1 (resolved): pod is fully gone, job should report Suspended and

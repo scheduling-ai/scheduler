@@ -289,23 +289,28 @@ pub(super) fn build_cluster_state(
         //   3. Empty pending — solver re-schedules; observe shows
         //      as queued.
         //
-        // For suspended jobs, solver mode keeps nodes occupied while
-        // pods terminate (graceful shutdown can take 30s) so it
-        // doesn't double-book.  Observe mode just emits Suspended.
+        // Suspended Jobs: always emit Phase::Suspended for every
+        // replica, regardless of whether the child Pods are still in
+        // the reflector (Terminating).  Otherwise
+        // build_replica_statuses_from_job_pods would derive
+        // Phase::Failed for those pods (kubelet sets pod.status.phase
+        // to Failed when SIGKILL'd by suspend), the Python solver
+        // would classify the workload as `passthrough_pods` instead
+        // of `suspended_pods`, and it would never get re-admitted
+        // when capacity frees.  Capacity is briefly over-counted
+        // until the terminating pods are gone — acceptable, since
+        // the solver still sees the workload as a re-admission
+        // candidate and queues it if chips aren't free yet.
         let statuses_by_replica: Vec<SolverReplicaStatus> = if is_suspended {
-            if is_managing && pods_present {
-                build_replica_statuses_from_job_pods(pod_store, &job, parallelism)
-            } else {
-                if let Some(s) = placement_shadow.as_deref_mut() {
-                    s.remove(&job_name);
-                }
-                (0..parallelism)
-                    .map(|_| SolverReplicaStatus {
-                        phase: Phase::Suspended,
-                        node: None,
-                    })
-                    .collect()
+            if let Some(s) = placement_shadow.as_deref_mut() {
+                s.remove(&job_name);
             }
+            (0..parallelism)
+                .map(|_| SolverReplicaStatus {
+                    phase: Phase::Suspended,
+                    node: None,
+                })
+                .collect()
         } else if pods_present {
             if let Some(s) = placement_shadow.as_deref_mut() {
                 s.remove(&job_name);
