@@ -195,3 +195,97 @@ resource "google_container_node_pool" "chip" {
     oauth_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
   }
 }
+
+# --- Observed cluster (Kueue-driven; we just watch it) ---------------------
+#
+# Sibling of `google_container_cluster.this`.  Same chip-pool shape so the
+# UI sees a familiar topology under the observe-mode bridge.  No DB pool —
+# Kueue persists its state as CRDs in etcd, nothing else here needs Postgres.
+#
+# This is a SECOND zonal cluster, so it does NOT get GKE's free-tier control
+# plane (cluster #1 already consumes it) — expect ~$73/mo just for the
+# control plane.  See infra/README.md for the full cost breakdown.
+
+resource "google_container_cluster" "observed" {
+  name     = var.observed_cluster_name
+  location = var.zone
+
+  logging_config {
+    enable_components = []
+  }
+  monitoring_config {
+    enable_components = []
+  }
+
+  private_cluster_config {
+    enable_private_nodes    = true
+    enable_private_endpoint = false
+    # Distinct CIDR from the scheduling cluster's master block (172.16.0.0/28).
+    master_ipv4_cidr_block = "172.16.0.16/28"
+  }
+
+  deletion_protection = false
+
+  initial_node_count       = 1
+  remove_default_node_pool = true
+
+  depends_on = [
+    google_project_service.container,
+    google_project_service.compute,
+    google_compute_router_nat.this,
+  ]
+}
+
+resource "google_container_node_pool" "observed_system" {
+  name       = "system"
+  cluster    = google_container_cluster.observed.name
+  location   = var.zone
+  node_count = 1
+
+  node_config {
+    # e2-standard-2 (2 dedicated vCPU) instead of cluster #1's e2-medium
+    # (shared 2 vCPU, bursts to ~940m allocatable).  Cluster #2 also runs
+    # Kueue's controller-manager on this node — its 500m CPU request +
+    # the ~900m of GKE system pods (kube-dns, konnectivity, metrics, etc.)
+    # don't fit on a bursting e2-medium.  Adds ~$6/mo over e2-medium.
+    machine_type = "e2-standard-2"
+    spot         = true
+    disk_size_gb = 15
+    disk_type    = "pd-standard"
+    oauth_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+  }
+}
+
+resource "google_container_node_pool" "observed_chip" {
+  for_each = local.chip_pools
+
+  name     = each.key
+  cluster  = google_container_cluster.observed.name
+  location = var.zone
+
+  node_count = var.observed_nodes_per_pool
+
+  node_config {
+    machine_type = "e2-micro"
+    spot         = true
+    disk_size_gb = 15
+    disk_type    = "pd-standard"
+
+    labels = {
+      "accelerator"                 = each.value.chip_type
+      "scheduler.example.com/chips" = tostring(each.value.chips_per_node)
+    }
+
+    # Same taint as cluster #1.  Kueue's ResourceFlavor toleration injection
+    # adds the matching toleration onto admitted Jobs' pod templates, so
+    # workloads still land here.  Without the taint, GKE system addons (and
+    # any unrelated default-namespace pods) could squat on chip nodes.
+    taint {
+      key    = "scheduler.example.com/managed"
+      value  = "true"
+      effect = "NO_SCHEDULE"
+    }
+
+    oauth_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+  }
+}

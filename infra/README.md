@@ -1,14 +1,28 @@
 # Test cluster infrastructure
 
-GKE cluster with fake GPU resources for testing the scheduler against
-real k8s APIs without real GPUs.
+Two GKE clusters with fake GPU resources, used to exercise both halves
+of the product:
+
+- **`scheduler` (cluster #1)** — runs the scheduler plane
+  (`k8s-bridge`, `scheduler-ui`, `load-generator`) and is also the
+  data-plane target our binder schedules into.
+- **`scheduler-observed` (cluster #2, optional)** — runs Kueue
+  natively.  Cluster #1's `k8s-bridge-observed` watches it (read-only)
+  so the UI can show what a customer-managed cluster looks like under
+  observe-only mode.  Provisioned by terraform, onboarded via
+  `scripts/setup-observed.sh`.
 
 ## What it creates
 
-- 1 zonal GKE Standard cluster in `europe-west4-a` (free tier: $0 control plane)
-- 4 spot node pools, 8 `e2-micro` nodes each (32 nodes total), one pool per chip type
-- Cloud NAT for outbound traffic (private nodes have no external IPs)
-- Scheduler SA with RBAC (read nodes/pods/jobs, manage workloads, impersonate users)
+For each cluster:
+
+- 1 zonal GKE Standard cluster in `europe-west4-a`
+- 1 `e2-medium` spot system pool (untainted, hosts kube-dns + scheduler plane on cluster #1, kueue + load-generator on cluster #2)
+- 4 spot chip pools, 8 `e2-micro` nodes each (32 chip nodes total), one pool per chip type
+- Cloud NAT for outbound traffic (private nodes have no external IPs) — shared across both clusters
+- Cluster #1 only: an `e2-small` DB pool for the in-cluster Postgres
+- Cluster #1 only: scheduler SA + RBAC (read nodes/pods/jobs, manage workloads, impersonate users)
+- Cluster #2 only: read-only observer RBAC (`scheduler-observer` SA) + Kueue install + queue config — applied by `setup-observed.sh`, not terraform
 
 Each pool sets two node labels at registration:
 - `accelerator`: `H200` | `H100` | `A100` | `L40S`
@@ -27,7 +41,11 @@ Each node simulates a single chip type, matching real GCP GPU node topology
 
 ## Cost
 
-~$83/month while running. $0 when destroyed.
+~$83/month for cluster #1 alone, ~$240/month with the observed cluster
+also up. $0 when destroyed.
+
+Cluster #1 (free GKE control plane via the once-per-billing-account zonal
+free tier):
 
 | Component         | Monthly |
 |-------------------|---------|
@@ -35,6 +53,15 @@ Each node simulates a single chip type, matching real GCP GPU node topology
 | 32x e2-micro spot | ~$58    |
 | 32x 15GB HDD      | ~$23    |
 | Cloud NAT gateway | ~$1     |
+
+Cluster #2 (loses the free tier — first cluster already used it):
+
+| Component         | Monthly |
+|-------------------|---------|
+| Control plane     | ~$73    |
+| 1x e2-medium spot | ~$6     |
+| 32x e2-micro spot | ~$58    |
+| 33x 15GB HDD      | ~$24    |
 
 ## Key decisions
 
@@ -70,12 +97,20 @@ needed a patcher DaemonSet and never mapped cleanly to the solver schema.
 ```sh
 # Prerequisites: gcloud auth login, terraform, kubectl, gke-gcloud-auth-plugin
 
-# First time / rebuild
+# First time / rebuild — provisions both clusters and applies cluster #1's RBAC
 cd infra && ./setup.sh
 
-# Tear down (stops billing)
+# Onboard the observed cluster: install Kueue + queues, mint observer
+# token, write the kubeconfig Secret on cluster #1.  Idempotent.
+./scripts/setup-observed.sh
+
+# Build + push image, roll out scheduler-plane on cluster #1, and
+# (when onboarded) the kueue-mode load-generator on cluster #2.
+./scripts/deploy.sh
+
+# Tear down (stops billing on both clusters)
 cd infra && terraform destroy
 
-# Scale (applies to every pool)
+# Scale chip pool size (applies to every pool on both clusters)
 cd infra && terraform apply -var="nodes_per_pool=4"
 ```

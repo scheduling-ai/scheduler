@@ -67,10 +67,24 @@ docker compose build
 
 ## Production deployment
 
-Production runs in GKE. Deploy manually with `scripts/deploy.sh` — it
-builds the image, pushes to Artifact Registry, and rolls out the three
-Deployments in `scheduler-system`. See `infra/README.md` for cluster
-setup (terraform + RBAC) and `infra/k8s/` for the manifests.
+Production runs in GKE.  **All code-level deployments go through
+`scripts/deploy.sh`** — it's the only supported way to ship a change to
+the running cluster.  It builds the image, pushes it to Artifact
+Registry, and rolls out every Deployment in `scheduler-system`
+(`k8s-bridge`, `scheduler-ui`, `load-generator`, and — when the
+observed-cluster Secret is present — `k8s-bridge-observed` plus the
+Kueue-mode load-generator on cluster #2).
+
+Do NOT hand-craft `kubectl apply` / `docker push` / `rollout restart`
+sequences instead — the script is idempotent and handles dirty-tree
+tagging, manifest substitution, secret-gated optional rollouts, and
+post-rollout wait-for-ready in one place.  Diverging from it leaves
+clusters in inconsistent states.
+
+See `infra/README.md` for cluster setup (terraform + RBAC) and
+`infra/k8s/` for the manifests.  Cluster #2 onboarding (Kueue install +
+kubeconfig Secret) is a one-time `scripts/setup-observed.sh` step,
+separate from per-release `deploy.sh`.
 
 The scheduler plane (`k8s-bridge`, `scheduler-ui`, `load-generator`) is
 logically separate from each data-plane cluster it schedules into,

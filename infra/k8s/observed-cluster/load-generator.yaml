@@ -1,0 +1,129 @@
+# Load generator for the observed cluster (Kueue-driven).
+#
+# Same image, same generator code, same /config HTTP API as the
+# scheduler-plane load-generator — but submits Jobs straight to the
+# kube-apiserver with the `kueue.x-k8s.io/queue-name` label.  Kueue
+# admits, picks a ResourceFlavor matching the pod's nodeAffinity, and
+# unsuspends the Job.  The default scheduler then binds the pods.
+#
+# Lives in the `scheduler-observer` namespace (created by
+# observer-rbac.yaml).  RBAC is a Role/RoleBinding scoped to `default`
+# (where the LocalQueue lives).  Applied by `scripts/deploy.sh` when
+# the observed cluster has been onboarded — i.e. when the
+# `observed-cluster-kubeconfig` Secret exists on cluster #1.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: load-generator
+  namespace: scheduler-observer
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: load-generator
+  namespace: default
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    # `delete` lets the generator clean up if it ever needs to; not used
+    # today but cheap to grant given everything's scoped to `default`.
+    verbs: ["create", "get", "list", "watch", "delete", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: load-generator
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: load-generator
+    namespace: scheduler-observer
+roleRef:
+  kind: Role
+  name: load-generator
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: load-generator-state
+  namespace: scheduler-observer
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 100Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: load-generator
+  namespace: scheduler-observer
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: load-generator
+  template:
+    metadata:
+      labels:
+        app: load-generator
+    spec:
+      serviceAccountName: load-generator
+      containers:
+        - name: generator
+          image: ${IMAGE}
+          imagePullPolicy: Always
+          command: ["uv", "run", "--frozen", "--no-sync", "load-generator"]
+          env:
+            - name: LOAD_GENERATOR_MODE
+              value: kueue
+            - name: KUEUE_QUEUE_NAME
+              value: default
+            - name: JOB_NAMESPACE
+              value: default
+            # Used as the `managed-by` label value; not as a schedulerName,
+            # since kueue mode lets the default scheduler bind.
+            - name: SCHEDULER_NAME
+              value: kueue
+            - name: LOAD_GENERATOR_CONFIG_PATH
+              value: /state/config.json
+            - name: PORT
+              value: "8100"
+            # Cluster has no device plugin; chip count travels via the
+            # annotation, not as a pod resource request.
+            - name: CHIP_RESOURCE
+              value: ""
+            - name: CHIPS_ANNOTATION
+              value: scheduler.example.com/chips-per-replica
+            - name: SENTRY_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: sentry
+                  key: SENTRY_DSN
+                  optional: true
+            - name: SENTRY_ENV
+              value: production-observed
+            - name: GIT_SHA
+              value: "${GIT_SHA}"
+            - name: SENTRY_DEBUG
+              value: "${SENTRY_DEBUG}"
+          ports:
+            - name: http
+              containerPort: 8100
+          volumeMounts:
+            - name: state
+              mountPath: /state
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: load-generator-state

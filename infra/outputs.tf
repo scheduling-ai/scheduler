@@ -30,3 +30,25 @@ output "zone" {
 output "project_id" {
   value = var.project_id
 }
+
+# --- Observed cluster ---
+
+output "observed_cluster_name" {
+  value = google_container_cluster.observed.name
+}
+
+output "observed_cluster_endpoint" {
+  description = "Public API endpoint of the observed cluster (used by scripts/setup-observed.sh to mint a kubeconfig)."
+  value       = google_container_cluster.observed.endpoint
+  sensitive   = true
+}
+
+output "observed_cluster_ca_certificate" {
+  description = "Base64-encoded CA cert of the observed cluster."
+  value       = google_container_cluster.observed.master_auth[0].cluster_ca_certificate
+  sensitive   = true
+}
+
+output "observed_kubeconfig_command" {
+  value = "gcloud container clusters get-credentials ${google_container_cluster.observed.name} --zone ${var.zone} --project ${var.project_id}"
+}

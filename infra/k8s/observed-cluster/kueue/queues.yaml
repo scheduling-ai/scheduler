@@ -1,0 +1,110 @@
+# Kueue queue topology mirroring the observed cluster's chip pools.
+#
+# How this fits together:
+#   - One ResourceFlavor per chip type. nodeLabels match the pool labels
+#     (`accelerator=H100` etc.) and tolerations cover the chip-pool taint
+#     (`scheduler.example.com/managed=true:NoSchedule`).  Kueue injects
+#     both onto admitted Jobs' pod templates, so workloads land on the
+#     right pool without us hand-crafting nodeAffinity/tolerations.
+#   - One ClusterQueue covering all four flavors.  Quota is set generously
+#     (~8x what e2-micro can actually run); the constraint that matters in
+#     practice is kubelet capacity, not Kueue quota.  Tight quota would be
+#     the right call once we want to demo queuing visibly.
+#   - One LocalQueue in `default` (where the load-generator submits Jobs)
+#     pointing at the ClusterQueue.  Jobs reference it via the
+#     `kueue.x-k8s.io/queue-name` label; Kueue picks the flavor whose
+#     nodeLabels match the Job's pod-template nodeAffinity.
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: h200
+spec:
+  nodeLabels:
+    accelerator: H200
+  tolerations:
+    - key: scheduler.example.com/managed
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: h100
+spec:
+  nodeLabels:
+    accelerator: H100
+  tolerations:
+    - key: scheduler.example.com/managed
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: a100
+spec:
+  nodeLabels:
+    accelerator: A100
+  tolerations:
+    - key: scheduler.example.com/managed
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: l40s
+spec:
+  nodeLabels:
+    accelerator: L40S
+  tolerations:
+    - key: scheduler.example.com/managed
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: chips
+spec:
+  namespaceSelector: {}
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: h200
+          resources:
+            - name: cpu
+              nominalQuota: "16"
+            - name: memory
+              nominalQuota: 64Gi
+        - name: h100
+          resources:
+            - name: cpu
+              nominalQuota: "16"
+            - name: memory
+              nominalQuota: 64Gi
+        - name: a100
+          resources:
+            - name: cpu
+              nominalQuota: "16"
+            - name: memory
+              nominalQuota: 64Gi
+        - name: l40s
+          resources:
+            - name: cpu
+              nominalQuota: "16"
+            - name: memory
+              nominalQuota: 64Gi
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  name: default
+  namespace: default
+spec:
+  clusterQueue: chips

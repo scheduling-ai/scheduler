@@ -32,10 +32,12 @@ fi
 PROJECT_ID="$(cd infra && terraform output -raw project_id 2>/dev/null || grep -E '^project_id' infra/terraform.tfvars | cut -d'"' -f2)"
 ZONE="$(cd infra && terraform output -raw zone 2>/dev/null || echo europe-west4-a)"
 CLUSTER_NAME="$(cd infra && terraform output -raw cluster_name)"
+OBS_CLUSTER_NAME="$(cd infra && terraform output -raw observed_cluster_name 2>/dev/null || echo "")"
 
 echo "==> Fetching kubectl credentials for ${CLUSTER_NAME}"
 gcloud container clusters get-credentials "${CLUSTER_NAME}" \
   --zone "${ZONE}" --project "${PROJECT_ID}" >/dev/null
+SCHED_CTX="gke_${PROJECT_ID}_${ZONE}_${CLUSTER_NAME}"
 
 # ----------------------------------------------------------------- image ----
 REPO="$(cd infra && terraform output -raw image_repo)"
@@ -98,6 +100,32 @@ if kubectl -n scheduler-system get secret pomerium-zero >/dev/null 2>&1; then
   kubectl -n scheduler-system rollout status deploy/pomerium --timeout=3m
 else
   echo "    (skipping pomerium rollout — secret pomerium-zero not found)"
+fi
+
+# ---------------------------------------------------- observed cluster ----
+# If the observed cluster has been onboarded (kubeconfig Secret exists on
+# the scheduler-plane side), also roll out the Kueue-mode load-generator
+# in cluster #2 against the same image.  Kueue itself + the queue
+# topology are owned by `scripts/setup-observed.sh`; this is just the
+# part that changes per release.
+if [[ "${HAS_OBSERVED_KUBECONFIG}" -eq 1 && -n "${OBS_CLUSTER_NAME}" ]]; then
+  echo "==> Rolling out load-generator on observed cluster (${OBS_CLUSTER_NAME})"
+  gcloud container clusters get-credentials "${OBS_CLUSTER_NAME}" \
+    --zone "${ZONE}" --project "${PROJECT_ID}" >/dev/null
+  OBS_CTX="gke_${PROJECT_ID}_${ZONE}_${OBS_CLUSTER_NAME}"
+
+  for f in infra/k8s/observed-cluster/load-generator.yaml; do
+    sed -e "s|\${IMAGE}|${IMAGE}|g" \
+        -e "s|\${GIT_SHA}|${SHA}|g" \
+        -e "s|\${SENTRY_DEBUG}|${SENTRY_DEBUG_VALUE}|g" \
+        "${f}" | kubectl --context="${OBS_CTX}" apply -f -
+  done
+  kubectl --context="${OBS_CTX}" -n scheduler-observer \
+    rollout status deploy/load-generator --timeout=3m
+
+  # Restore the active context so any post-script kubectl calls land on
+  # the scheduler plane, matching how deploy.sh used to leave the world.
+  kubectl config use-context "${SCHED_CTX}" >/dev/null
 fi
 
 echo "==> Done. State:"
