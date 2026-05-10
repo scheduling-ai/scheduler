@@ -324,10 +324,15 @@ class SimState {
     this.replaySolver = "milp";
     this.homeScenarioSolver = "milp";
     // liveSource defaults to the first listed solver so local-dev
-    // (loop-runner writing latest-milp.json) Just Works.  Production
-    // overrides this in loadLiveSources.
-    this.liveSource = this.solvers[0]?.ref || "milp";
-    this.homeLiveSource = this.liveSource;
+    // (loop-runner writing latest-milp.json) Just Works.  In
+    // production loadLiveSources owns this — only fill in when it
+    // hasn't run yet (or returned empty), otherwise the two writes
+    // race under Promise.all and the dropdown can end up bound to a
+    // value (e.g. "milp") that isn't in the BRIDGE_SOURCES options.
+    if (!this.liveSources.length) {
+      this.liveSource = this.solvers[0]?.ref || "milp";
+      this.homeLiveSource = this.liveSource;
+    }
   }
   async loadLiveSources() {
     try {
