@@ -26,10 +26,11 @@ variable "observed_cluster_name" {
 }
 
 # Per-pool node count for the observed cluster.  Kept independent from
-# `nodes_per_pool` so the two clusters can scale separately while the
-# europe-west4 INSTANCES quota is tight (currently 34).  Once a quota
-# bump lands, raise this to match `nodes_per_pool`.
+# `nodes_per_pool` so the two clusters can scale separately.  Defaults
+# to the same 8 as the scheduling cluster now that the europe-west4
+# INSTANCES quota is at 80; lower it if you ever need to share the cap
+# again.
 variable "observed_nodes_per_pool" {
   type    = number
-  default = 3
+  default = 8
 }
