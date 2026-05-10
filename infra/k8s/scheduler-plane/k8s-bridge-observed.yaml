@@ -43,6 +43,12 @@ spec:
             - observed:observed
             - --chip-count-label
             - scheduler.example.com/chips
+            # Pods request `cpu: 1m` (no GPU device plugin in our demo
+            # clusters), so the observer falls back to this annotation
+            # for per-replica chip count.  Matches what the load-generator
+            # writes via CHIPS_ANNOTATION.
+            - --chips-annotation
+            - scheduler.example.com/chips-per-replica
             - --port
             - "8080"
             - --interval-seconds

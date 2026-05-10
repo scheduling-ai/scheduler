@@ -170,11 +170,26 @@ enum Command {
         #[arg(long, default_value = "observed")]
         snapshot_label: String,
         /// Namespaces to exclude from the snapshot.  Defaults to the
-        /// usual K8s/Kueue infrastructure so the UI shows user
-        /// workloads only.  Pass an empty value to include everything.
+        /// usual K8s/Kueue/GKE infrastructure so the UI shows user
+        /// workloads only — without these, GMP collectors (one per
+        /// node) and our own load-generator pod show up in the
+        /// running list and confuse the chip-pool view.  Pass an empty
+        /// value to include everything.
         #[arg(
             long = "exclude-namespace",
-            default_values_t = ["kube-system".to_string(), "kube-public".to_string(), "kube-node-lease".to_string(), "local-path-storage".to_string(), "kueue-system".to_string()]
+            default_values_t = [
+                "kube-system".to_string(),
+                "kube-public".to_string(),
+                "kube-node-lease".to_string(),
+                "local-path-storage".to_string(),
+                "kueue-system".to_string(),
+                "gmp-system".to_string(),
+                "gmp-public".to_string(),
+                "gke-managed-system".to_string(),
+                "gke-managed-networking-dra-driver".to_string(),
+                "gke-managed-volumepopulator".to_string(),
+                "scheduler-observer".to_string(),
+            ]
         )]
         exclude_namespaces: Vec<String>,
     },

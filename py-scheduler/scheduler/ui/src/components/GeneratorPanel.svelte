@@ -27,7 +27,9 @@
     >
       {#if sim.liveSources.length}
         {#each sim.liveSources as source}
-          <option value={source.name}>{source.label}</option>
+          <option value={source.name}
+            >{source.shortLabel || source.label}</option
+          >
         {/each}
       {:else}
         {#each sim.solvers as solver}

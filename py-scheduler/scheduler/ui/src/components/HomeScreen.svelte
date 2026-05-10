@@ -9,6 +9,13 @@
       ?.description ?? "",
   );
 
+  // Verbose label for the currently selected live source.  Surfaced as
+  // helper text under the dropdown because the dropdown itself shows
+  // the compact `shortLabel` (the verbose `label` would truncate).
+  const liveSourceDescription = $derived(
+    sim.liveSources.find((s) => s.name === sim.homeLiveSource)?.label ?? "",
+  );
+
   function onDrop(e: DragEvent) {
     e.preventDefault();
     dragover = false;
@@ -40,7 +47,9 @@
           >
             {#if sim.liveSources.length}
               {#each sim.liveSources as source}
-                <option value={source.name}>{source.label}</option>
+                <option value={source.name}
+                  >{source.shortLabel || source.label}</option
+                >
               {/each}
             {:else}
               {#each sim.solvers as solver}
@@ -49,6 +58,9 @@
             {/if}
           </select>
         </div>
+        {#if liveSourceDescription}
+          <p class="scenario-desc">{liveSourceDescription}</p>
+        {/if}
         <button
           class="btn primary"
           onclick={() => {
