@@ -41,9 +41,12 @@ SPA_ROUTES = {"/", "/index.html", "/live", "/replay", "/generator"}
 def _load_bridge_sources() -> list[dict]:
     """Live-mode source list.
 
-    ``BRIDGE_SOURCES`` is JSON: ``[{"name": "...", "label": "...", "url": "..."}]``.
-    The UI surfaces ``label`` in its dropdown and polls
-    ``/state/latest-<name>.json`` to get a snapshot from ``url``.
+    ``BRIDGE_SOURCES`` is JSON:
+    ``[{"name": "...", "label": "...", "shortLabel": "...", "url": "..."}]``.
+    The UI surfaces ``label`` in its dropdown (verbose, descriptive)
+    and ``shortLabel`` in the header badge (terse, fits a chip-style
+    pill); if ``shortLabel`` is omitted, the badge falls back to ``label``.
+    Snapshot polling reads ``/state/latest-<name>.json``, served from ``url``.
 
     If unset, fall back to the single-bridge ``BRIDGE_URL`` (back-compat
     with the original docker-compose deployment) under the synthetic
@@ -63,7 +66,12 @@ def _load_bridge_sources() -> list[dict]:
             if not name or not url:
                 log.warning("BRIDGE_SOURCES entry missing name/url: %r", s)
                 continue
-            out.append({"name": name, "label": s.get("label") or name, "url": url})
+            label = s.get("label") or name
+            entry: dict = {"name": name, "label": label, "url": url}
+            short = s.get("shortLabel")
+            if short:
+                entry["shortLabel"] = short
+            out.append(entry)
         return out
     if BRIDGE_URL is not None:
         return [{"name": "live", "label": "Live", "url": BRIDGE_URL}]
@@ -199,14 +207,18 @@ def make_handler(
 
             if path == "/api/sources":
                 # Live-mode source list for the UI dropdown.
-                # Each entry: name (URL key) + label (display string).
+                # Each entry: name (URL key), label (verbose dropdown
+                # text), shortLabel (terse header badge text, optional).
                 # Empty in dev when LOOP_RUNNER_STATE_DIR-backed mode is
                 # in use — the UI then falls back to /api/solvers as
                 # before.
-                _json_response(
-                    self,
-                    [{"name": s["name"], "label": s["label"]} for s in BRIDGE_SOURCES],
-                )
+                payload = []
+                for s in BRIDGE_SOURCES:
+                    entry: dict = {"name": s["name"], "label": s["label"]}
+                    if "shortLabel" in s:
+                        entry["shortLabel"] = s["shortLabel"]
+                    payload.append(entry)
+                _json_response(self, payload)
                 return
 
             if path in SPA_ROUTES or path.startswith("/scenarios/"):

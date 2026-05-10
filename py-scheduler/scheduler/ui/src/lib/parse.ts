@@ -314,9 +314,15 @@ export function parseFrame(frame: Frame | null): ParsedView | null {
   );
   deployments.sort((a, b) => b.total - a.total);
 
+  // Skip nodes with no `accelerator`-style chip type — these are
+  // system nodes (kube-dns, scheduler plane, etc.) that the snapshot
+  // includes for completeness but which aren't chip-pool capacity.
+  // Without this filter the chip-type filter bar and the header
+  // free-counts get a stray empty bucket like ": 0 free".
   const chipFreeMap = new Map<string, { free: number; total: number }>();
   for (const [k, cap] of poolCap) {
     const ct = k.split("\0")[1];
+    if (!ct) continue;
     const used = poolUsed.get(k) || 0;
     const entry = chipFreeMap.get(ct) || { free: 0, total: 0 };
     entry.total += cap;
@@ -330,6 +336,7 @@ export function parseFrame(frame: Frame | null): ParsedView | null {
   const clusterChipFree: ClusterChipFree[] = [];
   for (const [k, cap] of poolCap) {
     const [cluster, chipType] = k.split("\0");
+    if (!chipType) continue;
     const used = poolUsed.get(k) || 0;
     const free = Math.max(0, cap - used);
     clusterChipFree.push({ cluster, chipType, free, total: cap });

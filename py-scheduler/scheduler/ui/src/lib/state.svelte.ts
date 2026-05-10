@@ -47,7 +47,9 @@ class SimState {
   solvers = $state<{ name: string; ref: string }[]>([]);
   /// Live-mode sources from /api/sources.  Empty in local-dev mode where
   /// loop-runner writes files; the dropdown then falls back to `solvers`.
-  liveSources = $state<{ name: string; label: string }[]>([]);
+  liveSources = $state<{ name: string; label: string; shortLabel?: string }[]>(
+    [],
+  );
   gen = new GeneratorState(
     () => this.currentMode === "live",
     (msg) => this.showError(msg),

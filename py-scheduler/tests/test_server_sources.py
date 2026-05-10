@@ -51,6 +51,23 @@ def test_bridge_sources_label_defaults_to_name(monkeypatch: pytest.MonkeyPatch) 
         {"BRIDGE_SOURCES": '[{"name": "kueue", "url": "http://b:8080"}]'},
     )
     assert srv.BRIDGE_SOURCES[0]["label"] == "kueue"
+    # shortLabel is optional — absent unless the YAML supplied one.
+    assert "shortLabel" not in srv.BRIDGE_SOURCES[0]
+
+
+def test_bridge_sources_short_label_round_trips(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When `shortLabel` is set, it survives the env round-trip and is
+    emitted on /api/sources for the header badge to use."""
+    srv = _reload_server(
+        monkeypatch,
+        {
+            "BRIDGE_SOURCES": (
+                '[{"name": "solver", "label": "Long descriptive label",'
+                ' "shortLabel": "Short", "url": "http://a:8080"}]'
+            )
+        },
+    )
+    assert srv.BRIDGE_SOURCES[0]["shortLabel"] == "Short"
 
 
 def test_bridge_sources_skips_invalid_entries(monkeypatch: pytest.MonkeyPatch) -> None:

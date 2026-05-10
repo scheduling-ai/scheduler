@@ -6,10 +6,12 @@
 
   // Live-mode source label.  Surfaced in the header so it's clear which
   // cluster is being watched when more than one source is configured.
+  // The header is space-constrained, so prefer `shortLabel` when the
+  // backend supplied one — the dropdown gets the verbose `label`.
   const liveSourceLabel = $derived.by(() => {
     if (sim.currentMode !== "live") return "";
     const found = sim.liveSources.find((s) => s.name === sim.liveSource);
-    return found?.label || sim.liveSource;
+    return found?.shortLabel || found?.label || sim.liveSource;
   });
 
   const counterText = $derived.by(() => {
