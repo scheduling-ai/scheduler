@@ -19,6 +19,30 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# ---------------------------------------------------------------- flags -----
+# --cleanup: also wipe the bridge's persistent workload store (the Postgres
+# `workloads` table) before rolling out.  Use this when the bridge has
+# accumulated a backlog the solver can't drain — e.g. the live UI is stuck
+# showing many thousands of queued jobs.  Without this flag the new bridge
+# pod re-loads the same backlog from Postgres on startup and re-deadlocks.
+CLEANUP=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --cleanup) CLEANUP=1; shift ;;
+    -h|--help)
+      cat <<EOF
+Usage: $0 [--cleanup]
+
+  --cleanup   Before rolling out, scale the load-generator and k8s-bridge
+              to 0, TRUNCATE the persistent workload store in Postgres,
+              and let the manifest reapply scale them back.  Use when the
+              bridge's queue has grown beyond what the solver can drain.
+EOF
+      exit 0 ;;
+    *) echo "unknown flag: $1" >&2; exit 1 ;;
+  esac
+done
+
 # ------------------------------------------------------------------ tag -----
 SHA="$(git rev-parse --short HEAD)"
 if ! git diff --quiet || ! git diff --cached --quiet; then
@@ -52,6 +76,34 @@ docker push "${IMAGE}"
 # --------------------------------------------------------------- apply -----
 echo "==> Applying data-plane manifests (namespace + RBAC)"
 kubectl apply -f infra/k8s/data-plane/
+
+if [[ "${CLEANUP}" -eq 1 ]]; then
+  # Stop everything that writes to the workload store, then truncate it.
+  # Order matters: a running bridge will re-upsert its in-memory map back
+  # to Postgres on every set_failures bump (job_store.rs), and the
+  # load-generator keeps POSTing new rows.  The scheduler-plane manifest
+  # reapply below restores both replicas to 1.
+  #
+  # We must wait for the pods to actually terminate before truncating —
+  # `kubectl scale --replicas=0` returns once the Deployment spec is
+  # patched, but the pod keeps running for its grace period (during which
+  # the binder tick loop will upsert workloads back into Postgres).
+  # `kubectl rollout status` is not sufficient here: for scale-down it
+  # returns as soon as `.status.replicas` matches `.spec.replicas`, which
+  # can flip to 0 before the pod has actually drained.  Use `wait
+  # --for=delete` against the actual pods to guarantee termination.
+  echo "==> Cleanup: scaling load-generator + k8s-bridge to 0"
+  kubectl -n scheduler-system scale deploy/load-generator --replicas=0
+  kubectl -n scheduler-system scale deploy/k8s-bridge --replicas=0
+  kubectl -n scheduler-system wait --for=delete --timeout=2m \
+    pod -l app=load-generator 2>/dev/null || true
+  kubectl -n scheduler-system wait --for=delete --timeout=2m \
+    pod -l app=k8s-bridge 2>/dev/null || true
+
+  echo "==> Cleanup: truncating workloads table in Postgres"
+  kubectl -n scheduler-system exec postgres-0 -- \
+    psql -U scheduler -d scheduler -c "TRUNCATE workloads;"
+fi
 
 # Wipe managed Jobs from the data plane before the new bridge takes over.
 # This is a demo cluster — we treat each redeploy as a fresh start rather
