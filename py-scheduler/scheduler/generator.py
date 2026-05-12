@@ -32,7 +32,11 @@ class GeneratorConfig:
     arrival_rate: float = 0.15
     burst_factor: float = 1.4
     quota_weights: dict[str, float] = field(
-        default_factory=lambda: {"inference": 1.0, "research": 1.0, "training": 1.0}
+        default_factory=lambda: {
+            "inference-quota": 1.0,
+            "research-quota": 1.0,
+            "training-quota": 1.0,
+        }
     )
     chip_weights: dict[str, float] = field(
         default_factory=lambda: {"A100": 1.0, "H100": 1.0, "H200": 1.0, "L40S": 0.7}

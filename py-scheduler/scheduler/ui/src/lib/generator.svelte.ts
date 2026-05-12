@@ -25,7 +25,8 @@ export class GeneratorState {
     runtime_min: "12",
     runtime_max: "40",
     gang_frequency: "0.08",
-    quota_weights: '{"training": 1, "research": 1, "inference": 1}',
+    quota_weights:
+      '{"training-quota": 1, "research-quota": 1, "inference-quota": 1}',
     chip_weights: '{"H200": 1, "H100": 1, "A100": 1, "L40S": 0.7}',
     chips_weights: JSON.stringify(
       {

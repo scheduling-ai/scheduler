@@ -1,9 +1,9 @@
 # Quota definitions consumed by the bridge via `--quotas`.
 #
 # The MILP solver rejects any pod whose `quota` annotation doesn't match a
-# quota defined here. The load-generator draws from `quota_weights` in its
-# GeneratorConfig (default: inference/research/training), so those names
-# need to exist; guarantees themselves are just advisory caps.
+# quota defined here.  The load-generator draws from `quota_weights` in its
+# GeneratorConfig (default: inference-quota / research-quota / training-quota),
+# so those names need to exist; guarantees themselves are just advisory caps.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -13,25 +13,25 @@ data:
   quotas.json: |
     [
       {
-        "name": "inference",
+        "name": "inference-quota",
         "guarantees": {
           "local": {"H100": 24, "H200": 16, "A100": 32, "L40S": 8}
         }
       },
       {
-        "name": "research",
+        "name": "research-quota",
         "guarantees": {
           "local": {"H100": 16, "H200": 16, "A100": 48, "L40S": 16}
         }
       },
       {
-        "name": "training",
+        "name": "training-quota",
         "guarantees": {
           "local": {"H100": 24, "H200": 32, "A100": 48, "L40S": 8}
         }
       },
       {
-        "name": "default",
+        "name": "default-quota",
         "guarantees": {
           "local": {"H100": 0, "H200": 0, "A100": 0, "L40S": 0}
         }

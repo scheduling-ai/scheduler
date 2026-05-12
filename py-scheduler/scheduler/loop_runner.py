@@ -65,9 +65,12 @@ DEFAULT_CLUSTERS = [
 ]
 
 DEFAULT_QUOTAS = [
-    Quota("training", {"us-east": {"H200": 48, "H100": 24}, "us-west": {"A100": 24}}),
-    Quota("inference", {"us-east": {"H100": 16}, "eu-central": {"H100": 32}}),
-    Quota("research", {"us-west": {"L40S": 24, "A100": 16}}),
+    Quota(
+        "training-quota",
+        {"us-east": {"H200": 48, "H100": 24}, "us-west": {"A100": 24}},
+    ),
+    Quota("inference-quota", {"us-east": {"H100": 16}, "eu-central": {"H100": 32}}),
+    Quota("research-quota", {"us-west": {"L40S": 24, "A100": 16}}),
 ]
 
 # ---------------------------------------------------------------------------

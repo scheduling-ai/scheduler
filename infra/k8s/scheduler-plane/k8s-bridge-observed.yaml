@@ -42,7 +42,10 @@ spec:
             - --mode
             - observe
             - --cluster
-            - observed:observed
+            # snapshot-name:kube-context.  Snapshot name shows up in
+            # the UI; the context name resolves against the mounted
+            # kubeconfig Secret.
+            - test-cluster:observed
             - --chip-count-label
             - scheduler.example.com/chips
             # Pods request `cpu: 1m` (no GPU device plugin in our demo

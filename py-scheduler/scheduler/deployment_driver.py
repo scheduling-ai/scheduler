@@ -58,18 +58,21 @@ class DepSpec:
     phase_offset: float
 
 
-# Two Deployments with out-of-phase sine waves.  Priorities pitched
-# against the Job-side generator's range (30–99 by default).
-# serve-flagship sits high enough to consistently land; serve-batch
-# sits in the middle so it wins against low-priority Jobs but loses to
-# bursty high-priority work — making preemption visible without rigging
-# the demo.  Per-Deployment max replicas are *capped* at runtime by
+# Four Deployments with out-of-phase sine waves, one workload pattern
+# per quota the demo cares about: two inference services, one pretrain
+# driver in training-quota, one research-batch runner in
+# research-quota.  Priorities are pitched against the Job-side
+# generator's range (30–99) so the high-priority `serve-flagship` and
+# `pretrain-driver` consistently land, while `serve-batch` and
+# `research-batch` sit in the middle and lose to bursty high-priority
+# Jobs — making preemption visible without rigging the demo.  Per-
+# Deployment max replicas are *capped* at runtime by
 # `GeneratorConfig.deployment_max_replicas` (UI-controlled) so a viewer
 # can dial intensity up or down.
 DEPLOYMENTS: list[DepSpec] = [
     DepSpec(
         name="serve-flagship",
-        quota="inference",
+        quota="inference-quota",
         priority=80,
         chip_type="H100",
         chips_per_replica=1,
@@ -79,13 +82,33 @@ DEPLOYMENTS: list[DepSpec] = [
     ),
     DepSpec(
         name="serve-batch",
-        quota="inference",
+        quota="inference-quota",
         priority=50,
         chip_type="A100",
         chips_per_replica=1,
         min_replicas=0,
-        period_seconds=300,  # 5-minute cycle, out of phase
+        period_seconds=300,  # 5-minute cycle
         phase_offset=math.pi / 2,
+    ),
+    DepSpec(
+        name="pretrain-driver",
+        quota="training-quota",
+        priority=70,
+        chip_type="H200",
+        chips_per_replica=8,  # one full HGX node per replica — typical pretraining shape
+        min_replicas=0,
+        period_seconds=360,  # 6-minute cycle, slower than the inference flips
+        phase_offset=math.pi,
+    ),
+    DepSpec(
+        name="research-batch",
+        quota="research-quota",
+        priority=40,
+        chip_type="A100",
+        chips_per_replica=2,  # multi-GPU research / fine-tuning
+        min_replicas=0,
+        period_seconds=180,  # 3-minute cycle, the fastest
+        phase_offset=3 * math.pi / 4,
     ),
 ]
 
