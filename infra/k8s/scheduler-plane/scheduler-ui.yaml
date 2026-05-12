@@ -22,11 +22,15 @@ spec:
             # Live-mode source list.  Each entry is one bridge instance the
             # UI dropdown can switch between.  Adding a third source =
             # one more JSON entry + one more bridge Deployment.
+            # Order matters: the first entry is the default the
+            # customer UI lands on.  Kueue first so the demo opens on
+            # the realistic "observer next to your existing Kueue
+            # install" surface.
             - name: BRIDGE_SOURCES
               value: |
                 [
-                  {"name": "solver",   "label": "Observer + MILP controller in fully controlled cluster", "shortLabel": "MILP-controlled",   "url": "http://k8s-bridge:8080"},
-                  {"name": "observed", "label": "Observer in Kueue cluster",                              "shortLabel": "Kueue (observed)", "url": "http://k8s-bridge-observed:8080"}
+                  {"name": "observed", "label": "Observer in Kueue cluster",                              "shortLabel": "Kueue (observed)", "url": "http://k8s-bridge-observed:8080"},
+                  {"name": "solver",   "label": "Observer + MILP controller in fully controlled cluster", "shortLabel": "MILP-controlled",   "url": "http://k8s-bridge:8080"}
                 ]
             - name: GENERATOR_URL
               value: http://load-generator:8100
