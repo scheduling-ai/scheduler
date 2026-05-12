@@ -38,7 +38,9 @@ spec:
           imagePullPolicy: Always
           command:
             - /usr/local/bin/k8s-bridge
-            - serve-observe
+            - serve
+            - --mode
+            - observe
             - --cluster
             - observed:observed
             - --chip-count-label

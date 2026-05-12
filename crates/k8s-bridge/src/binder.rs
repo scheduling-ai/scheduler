@@ -199,16 +199,31 @@ impl ClusterRuntime {
     }
 }
 
-/// Create a kube [`Client`] for a specific kubeconfig context.
+/// Create a kube [`Client`] for a cluster.
+///
+/// With an explicit kubeconfig `context` (`--cluster name:context`),
+/// loads that context from the kubeconfig file — the multi-cluster
+/// path, one entry per target.  With no context (`--cluster name`),
+/// falls through `Config::infer()`: kubeconfig current-context if a
+/// kubeconfig is reachable, otherwise in-cluster ServiceAccount
+/// credentials.  The in-cluster fallback is what lets the bridge run
+/// inside the cluster it observes without a kubeconfig Secret.
 async fn client_for_context(context: Option<&str>) -> Result<Client> {
-    let kubeconfig = Kubeconfig::read().context("failed to read kubeconfig")?;
-    let options = KubeConfigOptions {
-        context: context.map(String::from),
-        ..Default::default()
+    let config = match context {
+        Some(ctx) => {
+            let kubeconfig = Kubeconfig::read().context("failed to read kubeconfig")?;
+            let options = KubeConfigOptions {
+                context: Some(ctx.to_string()),
+                ..Default::default()
+            };
+            kube::Config::from_custom_kubeconfig(kubeconfig, &options)
+                .await
+                .context("failed to build kube config")?
+        }
+        None => kube::Config::infer()
+            .await
+            .context("no kubeconfig and not in-cluster; cannot infer kube config")?,
     };
-    let config = kube::Config::from_custom_kubeconfig(kubeconfig, &options)
-        .await
-        .context("failed to build kube config")?;
     Client::try_from(config).context("failed to create kube client")
 }
 

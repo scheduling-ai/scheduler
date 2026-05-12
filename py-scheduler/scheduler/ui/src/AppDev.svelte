@@ -1,14 +1,11 @@
 <script lang="ts">
-  // Production shell: live-only.  No chooser, no scenario replay, no
-  // fake-job generator — those live in AppDev.svelte / dev.html and
-  // never enter this bundle's dependency graph.  initFromUrl's URL-
-  // dispatch is replaced by a direct bootstrapLive so the prod build
-  // doesn't fetch /scenarios/index.json at all.
   import { sim } from "./lib/state.svelte";
   import { escapeHtml, chipColor } from "./lib/api";
+  import HomeScreen from "./components/HomeScreen.svelte";
   import Header from "./components/Header.svelte";
   import ClusterGrid from "./components/ClusterGrid.svelte";
   import ScaleView from "./components/ScaleView.svelte";
+  import GeneratorDrawer from "./components/GeneratorDrawer.svelte";
 
   let tooltipVisible = $state(false);
   let tooltipX = $state(0);
@@ -22,16 +19,7 @@
     return () => document.removeEventListener("pointerup", handler);
   });
   $effect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const src = params.get("source") || params.get("scheduler");
-    if (src) sim.liveSource = src;
-    Promise.all([sim.loadSolvers(), sim.loadLiveSources()])
-      .then(() =>
-        sim.bootstrapLive(
-          params.has("frame") ? Number(params.get("frame")) : null,
-        ),
-      )
-      .catch((e: any) => sim.showError(e.message));
+    sim.initFromUrl().catch((e: any) => sim.showError(e.message));
   });
 
   function handleMouseMove(e: MouseEvent) {
@@ -82,6 +70,7 @@
     }
   }
 
+  // Chip types in display order for Shift+1..4
   const chipTypeKeys = $derived(
     (sim.parsedView?.chipFree ?? []).map((c) => c.chipType),
   );
@@ -89,6 +78,7 @@
   function handleKeydown(e: KeyboardEvent) {
     if (!sim.frames.length) return;
 
+    // Shift+1..4: chip type selection (works even in input)
     if (e.shiftKey && e.key >= "1" && e.key <= "4") {
       const idx = Number(e.key) - 1;
       if (idx < chipTypeKeys.length) {
@@ -127,7 +117,8 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div onmousemove={handleMouseMove} onclick={handleClick}>
-  <Header />
+  <HomeScreen />
+  <Header dev={true} />
   {#if sim.selectedCluster}
     <div class="cluster-drill">
       <div class="cluster-drill-bar">
@@ -151,6 +142,7 @@
   {:else}
     <ScaleView />
   {/if}
+  <GeneratorDrawer />
 </div>
 
 <div

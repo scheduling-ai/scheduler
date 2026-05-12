@@ -2,6 +2,11 @@
   import { sim } from "../lib/state.svelte";
   import { chipColor } from "../lib/api";
 
+  // Mounted from both AppDev (chooser-aware shell) and App (live-only
+  // production shell). The Home button and traffic-gen toggle only make
+  // sense in the dev shell, so they're gated behind this flag.
+  let { dev = false }: { dev?: boolean } = $props();
+
   const chips = $derived(sim.parsedView?.chipFree ?? []);
 
   // Live-mode source label.  Surfaced in the header so it's clear which
@@ -139,7 +144,7 @@
       </div>
     {/if}
 
-    {#if sim.currentMode === "live"}
+    {#if dev && sim.currentMode === "live"}
       <button
         class="btn"
         class:active={sim.generatorOpen}
@@ -160,10 +165,12 @@
       </button>
     {/if}
 
-    <button
-      class="btn"
-      title="Return to the home screen"
-      onclick={() => sim.openHome()}>Home</button
-    >
+    {#if dev}
+      <button
+        class="btn"
+        title="Return to the home screen"
+        onclick={() => sim.openHome()}>Home</button
+      >
+    {/if}
   </div>
 </header>

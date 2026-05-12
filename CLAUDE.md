@@ -9,7 +9,7 @@ Multi-cluster GPU job scheduler.
 - `scripts/` — Dev tooling (kind cluster setup)
 - `deploy/` — K8s manifests and kind config
 - `docs/` — Design docs (see `docs/CATALOGUE.md`). If `docs/private/` exists, check `docs/private/CATALOGUE.md` too.
-- `py-scheduler/scheduler/ui/` — Svelte 5 + Vite browser UI (replay, live viewer, generator controls)
+- `py-scheduler/scheduler/ui/` — Svelte 5 + Vite browser UI. Two HTML entry points share `src/`: `index.html` → prod (live-only, what customers see), `dev.html` → dev tools (chooser, replay, scenarios, generator). Production gates the dev bundle via `UI_LANDING_PATH=/live` on the UI server.
 
 ## Simulator and UI
 
@@ -94,9 +94,9 @@ on the bridge), not a code change.
 
 ### Observe-only mode (no scheduling)
 
-`k8s-bridge serve-observe` reflects an external cluster (Kueue or
-otherwise scheduling natively) and serves the same `/snapshot` Frame
-the UI already consumes — no solver subprocess, no binder. Used to
+`k8s-bridge serve --mode=observe` reflects an external cluster (Kueue
+or otherwise scheduling natively) and serves the same `/snapshot`
+Frame the UI already consumes — no solver subprocess, no binder. Used to
 ship the UI as a standalone product against clusters we don't control.
 Manifests in `infra/k8s/scheduler-plane/k8s-bridge-observed.yaml`;
 read-only RBAC for the observed cluster in
@@ -109,6 +109,6 @@ bridge instance; switching the dropdown switches the snapshot source.
 
 ## Debugging the UI
 
-- Build and run locally with `docker compose up -d --build`, then open http://localhost:8000.
+- Build and run locally with `docker compose up -d --build`, then open http://localhost:8000. The chooser lives at http://localhost:8000/dev.html — `/` always serves the production bundle.
 - Use the `/screenshot` skill to take Playwright screenshots of the running UI and verify visual changes.
-- For dev iteration without Docker: `npm run dev` from `py-scheduler/scheduler/ui/` starts a Vite dev server with API proxy to `localhost:8000`.
+- For dev iteration without Docker: `npm run dev` from `py-scheduler/scheduler/ui/` starts a Vite dev server with API proxy to `localhost:8000`. Vite serves both entries; hit `/dev.html` for the chooser bundle.

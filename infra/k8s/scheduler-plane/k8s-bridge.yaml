@@ -27,6 +27,8 @@ spec:
           command:
             - /usr/local/bin/k8s-bridge
             - serve
+            - --mode
+            - schedule
             - --cluster
             - local:local
             - --chip-count-label
@@ -37,6 +39,7 @@ spec:
             - scheduler.example.com/managed
             - --taint-value
             - "true"
+            - --require-taint
             - --solver
             - milp
             - --quotas

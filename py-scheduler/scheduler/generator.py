@@ -231,7 +231,26 @@ def generate_cycle(
 
     healthy = [n for n in node_names if n not in failed_nodes]
     if healthy and rng.random() < cfg.node_failure_rate * dt:
-        failed_nodes.add(rng.choice(healthy))
+        failed = rng.choice(healthy)
+        failed_nodes.add(failed)
+        for job_id in list(pods.keys()):
+            pod = pods[job_id]
+            survivors = [rs for rs in pod.statuses_by_replica if rs.node != failed]
+            if len(survivors) == len(pod.statuses_by_replica):
+                continue
+            if not survivors:
+                del pods[job_id]
+                runtimes.pop(job_id, None)
+                gangs.pop(job_id, None)
+            else:
+                pods[job_id] = Pod(
+                    pod.chips_per_replica,
+                    pod.chip_type,
+                    pod.priority,
+                    pod.quota,
+                    pod.cluster,
+                    survivors,
+                )
 
     if failed_nodes and rng.random() < cfg.node_recovery_rate * dt:
         failed_nodes.discard(rng.choice(sorted(failed_nodes)))

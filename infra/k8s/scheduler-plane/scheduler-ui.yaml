@@ -30,6 +30,14 @@ spec:
                 ]
             - name: GENERATOR_URL
               value: http://load-generator:8100
+            # Production UI lands directly on the live view.  Setting
+            # this picks the live-only prod JS bundle (index.html) and
+            # locks down the dev bundle (dev.html: chooser, replay,
+            # scenarios, generator) — its entry HTML and every dev URL
+            # return 404.  Unset locally (`npm run dev`, `uv run
+            # scheduler-ui`) so the dev bundle remains the SPA entry.
+            - name: UI_LANDING_PATH
+              value: /live
             - name: PORT
               value: "8000"
             - name: SENTRY_DSN

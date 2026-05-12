@@ -15,15 +15,16 @@ import pytest
 def _reload_server(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -> None:
     """Reimport scheduler.server with the given env vars set.
 
-    BRIDGE_SOURCES / BRIDGE_URL are read at module import; reloading
-    rebuilds the BRIDGE_SOURCES list from the new env.
+    Env-driven config (BRIDGE_SOURCES / BRIDGE_URL / UI_LANDING_PATH) is
+    read at module import; reloading rebuilds those constants from the
+    new env.
 
     Returns nothing on purpose — `importlib.reload` mutates the module
     in place, and tests re-import via ``from scheduler import server as
     srv`` so the type checker resolves module attributes (a return
     value typed as ``ModuleType`` would be opaque).
     """
-    for key in ("BRIDGE_SOURCES", "BRIDGE_URL"):
+    for key in ("BRIDGE_SOURCES", "BRIDGE_URL", "UI_LANDING_PATH"):
         monkeypatch.delenv(key, raising=False)
     for k, v in env.items():
         monkeypatch.setenv(k, v)
@@ -125,3 +126,34 @@ def test_no_env_means_no_sources(monkeypatch: pytest.MonkeyPatch) -> None:
     from scheduler import server as srv
 
     assert srv.BRIDGE_SOURCES == []
+
+
+def test_landing_path_unset_serves_dev_bundle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No UI_LANDING_PATH = local-dev install: SPA fallback points at
+    the dev bundle (chooser + replay + generator + scenarios), and
+    every dev-tool URL routes there so the dev bundle's router can
+    dispatch."""
+    _reload_server(monkeypatch, {})
+    from scheduler import server as srv
+
+    assert srv.UI_LANDING_PATH is None
+    assert srv.SPA_ENTRY == "/dev.html"
+    assert srv.SPA_ROUTES == {"/", "/live", "/replay", "/generator"}
+
+
+def test_landing_path_serves_prod_bundle_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UI_LANDING_PATH set = production install: SPA serves only the
+    prod bundle and only at the landing surface. `/` and `/index.html`
+    302 to the landing path; /replay, /generator, /scenarios, and
+    /dev.html fall through to a 404 instead of booting a broken UI or
+    exposing the dev bundle."""
+    _reload_server(monkeypatch, {"UI_LANDING_PATH": "/live"})
+    from scheduler import server as srv
+
+    assert srv.UI_LANDING_PATH == "/live"
+    assert srv.SPA_ENTRY == "/index.html"
+    assert srv.SPA_ROUTES == {"/live"}

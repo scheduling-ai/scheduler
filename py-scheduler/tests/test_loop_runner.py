@@ -138,6 +138,47 @@ def test_chips_weights_missing_chip_type_falls_back_to_one():
         assert pod.chips_per_replica == 1
 
 
+def test_node_failure_evicts_replicas_on_that_node():
+    """A failed node must not leave pods claiming assignment to it — otherwise
+    the next solver tick sees a node that's been projected away and crashes
+    on a stale ``rs.node`` reference."""
+    config = GeneratorConfig(
+        seed=0,
+        arrival_rate=0.0,
+        replica_failure_rate=0.0,
+        node_failure_rate=1.0,
+        node_recovery_rate=0.0,
+    )
+    pods: dict[str, Pod] = {
+        "stays": Pod(4, "H100", 50, "q", "test", [PodReplicaStatus(Phase.RUNNING, "node-a")]),
+        "loses-one": Pod(
+            4,
+            "H100",
+            50,
+            "q",
+            "test",
+            [
+                PodReplicaStatus(Phase.RUNNING, "node-a"),
+                PodReplicaStatus(Phase.RUNNING, "node-b"),
+            ],
+        ),
+        "dies": Pod(4, "H100", 50, "q", "test", [PodReplicaStatus(Phase.RUNNING, "node-b")]),
+    }
+    runtimes = {k: 100.0 for k in pods}
+    gangs: dict[str, str] = {"dies": "g1"}
+    failed: set[str] = set()
+
+    generate_cycle(random.Random(0), config, pods, runtimes, gangs, failed, ["node-b"], dt=1.0)
+
+    assert failed == {"node-b"}
+    assert "stays" in pods and len(pods["stays"].statuses_by_replica) == 1
+    assert "loses-one" in pods
+    assert [rs.node for rs in pods["loses-one"].statuses_by_replica] == ["node-a"]
+    assert "dies" not in pods
+    assert "dies" not in runtimes
+    assert "dies" not in gangs
+
+
 def test_generator_config_round_trips_through_json():
     """Persisted configs come back through JSON, which stringifies all keys —
     from_dict must restore the nested int keys so chips_weights stays usable."""

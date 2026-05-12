@@ -1,6 +1,6 @@
 """
-E2E for `k8s-bridge serve-observe`: reflect a real cluster's state and
-serve a Frame snapshot — no scheduling, no binding.
+E2E for `k8s-bridge serve --mode=observe`: reflect a real cluster's
+state and serve a Frame snapshot — no scheduling, no binding.
 
 Validates the path that lets the UI ship as a standalone product against
 clusters scheduled by Kueue, kube-scheduler, or anything else.
@@ -42,10 +42,10 @@ pytestmark = pytest.mark.e2e
 
 @contextmanager
 def _observe_bridge(rust_binary: Path):
-    """Run `k8s-bridge serve-observe` against e2e-cluster-a.
+    """Run `k8s-bridge serve --mode=observe` against e2e-cluster-a.
 
     Logs to $E2E_LOG_DIR/observe.log so a failure has the same
-    forensic surface as the serve-mode bridge.
+    forensic surface as the schedule-mode bridge.
     """
     port = find_free_port()
     SCHEDULER_LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -55,7 +55,9 @@ def _observe_bridge(rust_binary: Path):
     proc = subprocess.Popen(
         [
             str(rust_binary),
-            "serve-observe",
+            "serve",
+            "--mode",
+            "observe",
             "--cluster",
             f"observed:kind-{CLUSTER_A}",
             "--port",
@@ -148,7 +150,7 @@ def _build_unmanaged_job(name: str, chip_type: str) -> client.V1Job:
     )
 
 
-def test_serve_observe_picks_up_kubectl_applied_job(rust_binary, k8s_clients):
+def test_observe_mode_picks_up_kubectl_applied_job(rust_binary, k8s_clients):
     """An unmanaged Job applied directly to the cluster must surface in
     the observe bridge's /snapshot once kube-scheduler binds its pod.
 

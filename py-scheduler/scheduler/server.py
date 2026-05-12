@@ -35,7 +35,26 @@ STATE_DIR = Path(os.environ.get("LOOP_RUNNER_STATE_DIR", "/data/live-state"))
 BRIDGE_URL = os.environ.get("BRIDGE_URL", "").rstrip("/") or None
 GENERATOR_URL = os.environ.get("GENERATOR_URL", "").rstrip("/") or None
 
-SPA_ROUTES = {"/", "/index.html", "/live", "/replay", "/generator"}
+# Where bare `/` resolves to in production installs. Setting it picks
+# the production UI bundle (index.html: live-only, no chooser) and
+# locks down the dev bundle (dev.html: chooser + replay + scenarios +
+# generator) — `/dev.html` 404s and the SPA fallback narrows to just
+# the configured landing surface, so any other dev URL also 404s
+# instead of booting a half-broken UI. When unset (local dev) the dev
+# bundle is the SPA entry, so `/`, `/replay`, `/generator`, and
+# `/scenarios/<name>` all serve dev.html and let its router dispatch.
+UI_LANDING_PATH = os.environ.get("UI_LANDING_PATH", "").strip() or None
+
+if UI_LANDING_PATH:
+    # Production: prod bundle is the only customer-visible surface.
+    SPA_ENTRY = "/index.html"
+    SPA_ROUTES = {UI_LANDING_PATH}
+else:
+    # Local dev: dev bundle owns SPA routing — chooser + every dev
+    # tool surface. /index.html stays a real file in dist/ so the
+    # prod bundle is inspectable without restarting the server.
+    SPA_ENTRY = "/dev.html"
+    SPA_ROUTES = {"/", "/live", "/replay", "/generator"}
 
 
 def _load_bridge_sources() -> list[dict]:
@@ -221,8 +240,25 @@ def make_handler(
                 _json_response(self, payload)
                 return
 
-            if path in SPA_ROUTES or path.startswith("/scenarios/"):
-                self.path = "/index.html"
+            # Production landing redirect + dev-bundle gate.  When
+            # UI_LANDING_PATH is set, `/` and `/index.html` 302 to the
+            # configured surface, and the dev bundle's entry HTML is
+            # 404'd so customers can't reach the chooser by URL.
+            if UI_LANDING_PATH:
+                if path in ("/", "/index.html"):
+                    self.send_response(302)
+                    self.send_header("Location", UI_LANDING_PATH)
+                    self.end_headers()
+                    return
+                if path == "/dev.html":
+                    self.send_error(404)
+                    return
+
+            # /scenarios/* is a dev-only client-side route. Gate it off
+            # the same env knob that gates the SPA route set — production
+            # installs return a clean 404 for scenario URLs.
+            if path in SPA_ROUTES or (not UI_LANDING_PATH and path.startswith("/scenarios/")):
+                self.path = SPA_ENTRY
                 super().do_GET()
                 return
 
