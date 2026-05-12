@@ -4,6 +4,7 @@
       "chip_type": "H100",
       "chips_per_replica": 8,
       "cluster": "us-west",
+      "kind": "deployment",
       "priority": 5,
       "quota": "research-vision",
       "statuses_by_replica": [

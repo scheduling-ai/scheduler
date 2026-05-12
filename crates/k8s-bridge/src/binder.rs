@@ -54,7 +54,7 @@ use crate::solver;
 #[cfg(test)]
 use crate::solver_types::{ClusterState as SolverCluster, Node as SolverNode, ScheduleResult};
 use crate::solver_types::{
-    Phase, Pod as SolverPod, PodReplicaStatus as SolverReplicaStatus, SolverRequest,
+    Phase, Pod as SolverPod, PodKind, PodReplicaStatus as SolverReplicaStatus, SolverRequest,
 };
 
 /// Configuration for the binder, replacing hardcoded constants.
@@ -751,6 +751,7 @@ pub async fn run(
                             quota,
                             cluster: Some(cluster.clone()),
                             statuses_by_replica: statuses,
+                            kind: PodKind::Job,
                         }
                     });
                     placement_shadow.insert(name.clone(), (node_counts.clone(), now, solver_pod));
@@ -1009,6 +1010,7 @@ mod tests {
                     node: node.map(String::from),
                 })
                 .collect(),
+            kind: PodKind::Deployment,
         }
     }
 

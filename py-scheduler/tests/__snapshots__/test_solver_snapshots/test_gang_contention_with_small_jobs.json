@@ -4,6 +4,7 @@
       "chip_type": "H200",
       "chips_per_replica": 8,
       "cluster": "us-east",
+      "kind": "deployment",
       "priority": 2,
       "quota": "training-large",
       "statuses_by_replica": [
@@ -133,6 +134,7 @@
       "chip_type": "H200",
       "chips_per_replica": 8,
       "cluster": "us-east",
+      "kind": "deployment",
       "priority": 3,
       "quota": "training-large",
       "statuses_by_replica": [
@@ -282,6 +284,7 @@
       "chip_type": "H200",
       "chips_per_replica": 1,
       "cluster": "us-east",
+      "kind": "deployment",
       "priority": 5,
       "quota": "platform-ci",
       "statuses_by_replica": [
@@ -295,6 +298,7 @@
       "chip_type": "H200",
       "chips_per_replica": 1,
       "cluster": "us-east",
+      "kind": "deployment",
       "priority": 5,
       "quota": "platform-ci",
       "statuses_by_replica": [
@@ -308,6 +312,7 @@
       "chip_type": "H200",
       "chips_per_replica": 1,
       "cluster": "us-east",
+      "kind": "deployment",
       "priority": 5,
       "quota": "platform-ci",
       "statuses_by_replica": [
@@ -321,6 +326,7 @@
       "chip_type": "H200",
       "chips_per_replica": 1,
       "cluster": "us-east",
+      "kind": "deployment",
       "priority": 5,
       "quota": "platform-ci",
       "statuses_by_replica": [
@@ -334,6 +340,7 @@
       "chip_type": "H200",
       "chips_per_replica": 1,
       "cluster": "us-east",
+      "kind": "deployment",
       "priority": 5,
       "quota": "platform-ci",
       "statuses_by_replica": [
@@ -347,6 +354,7 @@
       "chip_type": "H200",
       "chips_per_replica": 1,
       "cluster": "us-east",
+      "kind": "deployment",
       "priority": 5,
       "quota": "platform-ci",
       "statuses_by_replica": [
@@ -360,6 +368,7 @@
       "chip_type": "H200",
       "chips_per_replica": 1,
       "cluster": "us-east",
+      "kind": "deployment",
       "priority": 5,
       "quota": "platform-ci",
       "statuses_by_replica": [
@@ -373,6 +382,7 @@
       "chip_type": "H200",
       "chips_per_replica": 1,
       "cluster": "us-east",
+      "kind": "deployment",
       "priority": 5,
       "quota": "platform-ci",
       "statuses_by_replica": [
@@ -386,6 +396,7 @@
       "chip_type": "H200",
       "chips_per_replica": 1,
       "cluster": "us-east",
+      "kind": "deployment",
       "priority": 5,
       "quota": "platform-ci",
       "statuses_by_replica": [
@@ -399,6 +410,7 @@
       "chip_type": "H200",
       "chips_per_replica": 1,
       "cluster": "us-east",
+      "kind": "deployment",
       "priority": 5,
       "quota": "platform-ci",
       "statuses_by_replica": [
@@ -412,6 +424,7 @@
       "chip_type": "H200",
       "chips_per_replica": 1,
       "cluster": "us-east",
+      "kind": "deployment",
       "priority": 5,
       "quota": "platform-ci",
       "statuses_by_replica": [
@@ -425,6 +438,7 @@
       "chip_type": "H200",
       "chips_per_replica": 1,
       "cluster": "us-east",
+      "kind": "deployment",
       "priority": 5,
       "quota": "platform-ci",
       "statuses_by_replica": [
@@ -438,6 +452,7 @@
       "chip_type": "H200",
       "chips_per_replica": 1,
       "cluster": "us-east",
+      "kind": "deployment",
       "priority": 5,
       "quota": "platform-ci",
       "statuses_by_replica": [
@@ -451,6 +466,7 @@
       "chip_type": "H200",
       "chips_per_replica": 1,
       "cluster": "us-east",
+      "kind": "deployment",
       "priority": 5,
       "quota": "platform-ci",
       "statuses_by_replica": [
@@ -464,6 +480,7 @@
       "chip_type": "H200",
       "chips_per_replica": 1,
       "cluster": "us-east",
+      "kind": "deployment",
       "priority": 5,
       "quota": "platform-ci",
       "statuses_by_replica": [
@@ -477,6 +494,7 @@
       "chip_type": "H200",
       "chips_per_replica": 1,
       "cluster": "us-east",
+      "kind": "deployment",
       "priority": 5,
       "quota": "platform-ci",
       "statuses_by_replica": [
@@ -490,6 +508,7 @@
       "chip_type": "H200",
       "chips_per_replica": 1,
       "cluster": "us-east",
+      "kind": "deployment",
       "priority": 5,
       "quota": "platform-ci",
       "statuses_by_replica": [
@@ -503,6 +522,7 @@
       "chip_type": "H200",
       "chips_per_replica": 1,
       "cluster": "us-east",
+      "kind": "deployment",
       "priority": 5,
       "quota": "platform-ci",
       "statuses_by_replica": [
@@ -516,6 +536,7 @@
       "chip_type": "H200",
       "chips_per_replica": 1,
       "cluster": "us-east",
+      "kind": "deployment",
       "priority": 5,
       "quota": "platform-ci",
       "statuses_by_replica": [
@@ -529,6 +550,7 @@
       "chip_type": "H200",
       "chips_per_replica": 1,
       "cluster": "us-east",
+      "kind": "deployment",
       "priority": 5,
       "quota": "platform-ci",
       "statuses_by_replica": [

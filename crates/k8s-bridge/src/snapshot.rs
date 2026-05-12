@@ -145,7 +145,7 @@ fn pod_fully_running(pod: &Pod) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::solver_types::{Node, PodReplicaStatus};
+    use crate::solver_types::{Node, PodKind, PodReplicaStatus};
 
     fn running_replica(node: &str) -> PodReplicaStatus {
         PodReplicaStatus {
@@ -187,6 +187,7 @@ mod tests {
                 quota: "q".into(),
                 cluster: Some("c".into()),
                 statuses_by_replica: vec![running_replica("n1")],
+                kind: PodKind::Deployment,
             },
         );
         pods.insert(
@@ -198,6 +199,7 @@ mod tests {
                 quota: "q".into(),
                 cluster: None,
                 statuses_by_replica: vec![queued_replica()],
+                kind: PodKind::Deployment,
             },
         );
 

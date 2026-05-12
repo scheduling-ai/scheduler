@@ -30,7 +30,7 @@ use tracing::warn;
 
 use crate::job_store::{self, ManagedObject, Workload};
 use crate::solver_types::{
-    ClusterState as SolverCluster, Node as SolverNode, Phase, Pod as SolverPod,
+    ClusterState as SolverCluster, Node as SolverNode, Phase, Pod as SolverPod, PodKind,
     PodReplicaStatus as SolverReplicaStatus, SolverRequest,
 };
 
@@ -149,6 +149,7 @@ pub(super) fn build_request_multi(
                     quota,
                     cluster: None,
                     statuses_by_replica,
+                    kind: PodKind::Job,
                 },
             );
         }
@@ -410,6 +411,7 @@ pub(super) fn build_cluster_state(
                 quota,
                 cluster,
                 statuses_by_replica,
+                kind: PodKind::Job,
             },
         );
     }
@@ -512,6 +514,7 @@ pub(super) fn build_cluster_state(
                     phase: Phase::Running,
                     node: node_name,
                 }],
+                kind: PodKind::Deployment,
             },
         );
     }

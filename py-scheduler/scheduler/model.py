@@ -124,6 +124,12 @@ class Pod:
     quota: str
     cluster: str | None  # assigned cluster, None if not yet placed
     statuses_by_replica: list[PodReplicaStatus]
+    # Which k8s controller owns this pod.  The solver itself doesn't
+    # branch on this — both kinds are scheduled the same way — but the
+    # UI uses it to distinguish Job rows from Deployment rows without
+    # name-prefix heuristics.  Default is "deployment" for backwards
+    # compatibility with frozen replay scenarios.
+    kind: str = "deployment"
 
 
 @dataclass(frozen=True)
@@ -200,6 +206,7 @@ def solver_request_from_json(s: str) -> SolverRequest:
                     PodReplicaStatus(phase=Phase(r["phase"]), node=r.get("node"))
                     for r in v["statuses_by_replica"]
                 ],
+                kind=v.get("kind", "deployment"),
             )
             for k, v in d["pods"].items()
         },

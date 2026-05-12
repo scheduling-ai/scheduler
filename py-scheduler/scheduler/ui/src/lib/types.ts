@@ -9,6 +9,9 @@ export interface Pod {
   chip_type: string;
   chips_per_replica: number;
   statuses_by_replica: Replica[];
+  /** "job" or "deployment".  Optional for backwards compatibility with
+   *  frozen replay scenarios that predate the bridge populating it. */
+  kind?: "job" | "deployment";
 }
 
 export interface Node {

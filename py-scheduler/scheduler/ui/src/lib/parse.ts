@@ -214,7 +214,10 @@ export function parseFrame(frame: Frame | null): ParsedView | null {
     const cpr = pod.chips_per_replica || 1;
     const inGang =
       (gangSetMembers.get(podToIdx.get(podName) || 0)?.size || 0) > 1;
-    const isJob = inGang;
+    // Prefer the explicit `kind` set by the bridge; fall back to the
+    // gang heuristic for frozen replay scenarios that don't have it.
+    const isJob =
+      pod.kind === "job" ? true : pod.kind === "deployment" ? false : inGang;
     const quotaName = pod.quota || "default";
     const chipType = pod.chip_type || "";
 

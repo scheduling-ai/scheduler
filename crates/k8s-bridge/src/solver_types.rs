@@ -25,6 +25,22 @@ pub enum Phase {
     Completed,
 }
 
+/// Which Kubernetes controller owns this pod's replicas.  The solver
+/// itself doesn't care — both kinds are scheduled the same way — but
+/// the UI uses it to distinguish "Job" rows (no icon) from
+/// "Deployment" rows (≡ icon, autoscaling implied) without resorting
+/// to name-prefix heuristics.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PodKind {
+    Job,
+    /// Default for backwards compatibility with frozen replay scenarios
+    /// — pods built before this field existed get rendered as
+    /// Deployments, matching the prior heuristic's classification.
+    #[default]
+    Deployment,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PodReplicaStatus {
     pub phase: Phase,
@@ -41,6 +57,8 @@ pub struct Pod {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cluster: Option<String>,
     pub statuses_by_replica: Vec<PodReplicaStatus>,
+    #[serde(default)]
+    pub kind: PodKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -116,6 +134,7 @@ mod tests {
                                 node: None,
                             },
                         ],
+                        kind: PodKind::Deployment,
                     },
                 ),
                 (
@@ -130,6 +149,7 @@ mod tests {
                             phase: Phase::Running,
                             node: Some("node-0".into()),
                         }],
+                        kind: PodKind::Deployment,
                     },
                 ),
                 (
@@ -147,6 +167,7 @@ mod tests {
                             };
                             4
                         ],
+                        kind: PodKind::Deployment,
                     },
                 ),
                 (
@@ -161,6 +182,7 @@ mod tests {
                             phase: Phase::Completed,
                             node: Some("node-0".into()),
                         }],
+                        kind: PodKind::Deployment,
                     },
                 ),
             ]),
@@ -211,6 +233,7 @@ mod tests {
                             node: None,
                         },
                     ],
+                    kind: PodKind::Deployment,
                 },
             )]),
             gang_sets: vec![],
@@ -292,6 +315,7 @@ mod tests {
                             phase: Phase::Running,
                             node: Some("node-0".into()),
                         }],
+                        kind: PodKind::Deployment,
                     },
                 ),
                 (
@@ -306,6 +330,7 @@ mod tests {
                             phase: Phase::Running,
                             node: None,
                         }],
+                        kind: PodKind::Deployment,
                     },
                 ),
             ]),
@@ -389,6 +414,7 @@ mod tests {
                             phase: Phase::Running,
                             node: Some("node-0".into()),
                         }],
+                        kind: PodKind::Deployment,
                     },
                 ),
                 (
@@ -403,6 +429,7 @@ mod tests {
                             phase: Phase::Running,
                             node: None,
                         }],
+                        kind: PodKind::Deployment,
                     },
                 ),
             ]),
