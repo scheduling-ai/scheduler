@@ -140,14 +140,18 @@ def _build_job(sub: NewSubmission, mode: str = MODE) -> dict:
             "limits": {CHIP_RESOURCE: str(pod.chips_per_replica)},
         }
     else:
-        # GKE demo cluster has no device plugin; skip the GPU request so
-        # kubelet admits the pod. Chip count travels via CHIPS_ANNOTATION.
-        # Memory request reflects what busybox-sleep actually consumes
-        # plus pod overhead, so kubelet's eviction accounting is honest
-        # — the chip nodes are e2-micro and have little headroom.
+        # GKE demo cluster has no GPU device plugin, so request CPU
+        # proportional to the chip count instead.  This makes
+        # `chips_per_replica` a real k8s-scheduled resource (CPU is the
+        # proxy) so Kueue's ClusterQueue gates admission on chips, and
+        # kube-scheduler binds with chip-aware capacity awareness.
+        # 50m per chip × max 16 chips = 800m, fits one max-sized job
+        # per 940m-allocatable e2-micro.  Memory stays modest — the
+        # constraint is chip-equivalent CPU, not memory.
+        cpu_request = f"{pod.chips_per_replica * 50}m"
         container["resources"] = {
-            "requests": {"cpu": "1m", "memory": "16Mi"},
-            "limits": {"cpu": "50m", "memory": "64Mi"},
+            "requests": {"cpu": cpu_request, "memory": "16Mi"},
+            "limits": {"cpu": cpu_request, "memory": "64Mi"},
         }
 
     pod_labels = {

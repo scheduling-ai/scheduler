@@ -6,10 +6,11 @@
 #     (`scheduler.example.com/managed=true:NoSchedule`).  Kueue injects
 #     both onto admitted Jobs' pod templates, so workloads land on the
 #     right pool without us hand-crafting nodeAffinity/tolerations.
-#   - One ClusterQueue covering all four flavors.  Quota is set generously
-#     (~8x what e2-micro can actually run); the constraint that matters in
-#     practice is kubelet capacity, not Kueue quota.  Tight quota would be
-#     the right call once we want to demo queuing visibly.
+#   - One ClusterQueue covering all four flavors.  CPU quota per flavor
+#     is sized to match the pool's chip count, with the load-generator
+#     requesting CPU = chips_per_replica × 50m — so admission gates on
+#     chips behind Kueue's standard CPU quota mechanic (a real device
+#     plugin would let us drop the proxy, but we don't run one).
 #   - One LocalQueue in `default` (where the load-generator submits Jobs)
 #     pointing at the ClusterQueue.  Jobs reference it via the
 #     `kueue.x-k8s.io/queue-name` label; Kueue picks the flavor whose
@@ -74,30 +75,36 @@ metadata:
 spec:
   namespaceSelector: {}
   resourceGroups:
+    # CPU is sized as the chip-count proxy: the load-generator sets
+    # `cpu = chips_per_replica * 50m`, so `nominalQuota` in CPU is
+    # `(chips-per-node × nodes-in-pool) × 50m`.  Match physical chip
+    # capacity per pool exactly (A100 = 16×8 chips, H100/H200 = 8×8,
+    # L40S = 4×8) and Kueue admission gates on chips behind a
+    # familiar Kueue knob without a real device plugin.
     - coveredResources: ["cpu", "memory"]
       flavors:
         - name: h200
           resources:
             - name: cpu
-              nominalQuota: "16"
+              nominalQuota: "3.2"
             - name: memory
               nominalQuota: 64Gi
         - name: h100
           resources:
             - name: cpu
-              nominalQuota: "16"
+              nominalQuota: "3.2"
             - name: memory
               nominalQuota: 64Gi
         - name: a100
           resources:
             - name: cpu
-              nominalQuota: "16"
+              nominalQuota: "6.4"
             - name: memory
               nominalQuota: 64Gi
         - name: l40s
           resources:
             - name: cpu
-              nominalQuota: "16"
+              nominalQuota: "1.6"
             - name: memory
               nominalQuota: 64Gi
 ---
