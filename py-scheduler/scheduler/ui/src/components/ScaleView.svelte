@@ -1,9 +1,11 @@
 <script lang="ts">
-  import { sim } from "../lib/state.svelte";
+  import { getPlayback } from "../lib/context";
   import { chipColor } from "../lib/api";
   import type { Workload, Job, DeploymentGroup } from "../lib/types";
   import FilterBar from "./FilterBar.svelte";
   import WorkloadDetail from "./WorkloadDetail.svelte";
+
+  const sim = getPlayback();
 
   const selQ = $derived(sim.selectedQuota);
   const selW = $derived(sim.selectedWorkload);
@@ -65,7 +67,7 @@
 
   type RenderEntry = {
     w: Workload;
-    bracket: "" | "\u250C" | "\u2502" | "\u2514";
+    bracket: "" | "┌" | "│" | "└";
   };
 
   function buildColumn(
@@ -127,9 +129,9 @@
           );
           const posInGang = gangGroup.indexOf(w);
           if (gangGroup.length > 1) {
-            if (posInGang === 0) bracket = "\u250C";
-            else if (posInGang === gangGroup.length - 1) bracket = "\u2514";
-            else bracket = "\u2502";
+            if (posInGang === 0) bracket = "┌";
+            else if (posInGang === gangGroup.length - 1) bracket = "└";
+            else bracket = "│";
           }
         }
       }
@@ -231,7 +233,7 @@
               <span
                 class="sv-type-icon"
                 title={w.kind === "deployment" ? "Deployment (autoscaled)" : ""}
-                >{w.kind === "deployment" ? "\u2261" : ""}</span
+                >{w.kind === "deployment" ? "≡" : ""}</span
               >
               <span
                 class="sv-dot {dotClass(w)}"

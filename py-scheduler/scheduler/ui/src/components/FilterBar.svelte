@@ -1,6 +1,8 @@
 <script lang="ts">
-  import { sim } from "../lib/state.svelte";
+  import { getPlayback } from "../lib/context";
   import { chipColor } from "../lib/api";
+
+  const sim = getPlayback();
 
   let searchEl: HTMLInputElement;
   let localSearch = $state("");

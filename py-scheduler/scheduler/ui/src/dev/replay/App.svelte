@@ -1,11 +1,15 @@
 <script lang="ts">
-  import { sim } from "./lib/state.svelte";
-  import { escapeHtml, chipColor } from "./lib/api";
-  import HomeScreen from "./components/HomeScreen.svelte";
-  import Header from "./components/Header.svelte";
-  import ClusterGrid from "./components/ClusterGrid.svelte";
-  import ScaleView from "./components/ScaleView.svelte";
-  import GeneratorDrawer from "./components/GeneratorDrawer.svelte";
+  // Replay app: load a JSONL (built-in scenario via ?scenario=, URL
+  // via ?session=, or drag-and-drop) and step through it.  The solver
+  // chain runs server-side at /api/solve.
+  import { ReplayState } from "../../lib/replay.svelte";
+  import { setPlaybackContext } from "../../lib/context";
+  import { escapeHtml, chipColor } from "../../lib/api";
+  import Header from "./Header.svelte";
+  import ClusterGrid from "../../components/ClusterGrid.svelte";
+  import ScaleView from "../../components/ScaleView.svelte";
+
+  const sim = setPlaybackContext(new ReplayState());
 
   let tooltipVisible = $state(false);
   let tooltipX = $state(0);
@@ -13,11 +17,15 @@
   let tooltipHtml = $state("");
   let tooltipEl: HTMLDivElement;
 
+  let fileInput: HTMLInputElement;
+  let dragover = $state(false);
+
   $effect(() => {
     const handler = () => sim.handleSliderPointerUp();
     document.addEventListener("pointerup", handler);
     return () => document.removeEventListener("pointerup", handler);
   });
+
   $effect(() => {
     sim.initFromUrl().catch((e: any) => sim.showError(e.message));
   });
@@ -70,15 +78,11 @@
     }
   }
 
-  // Chip types in display order for Shift+1..4
   const chipTypeKeys = $derived(
     (sim.parsedView?.chipFree ?? []).map((c) => c.chipType),
   );
 
   function handleKeydown(e: KeyboardEvent) {
-    if (!sim.frames.length) return;
-
-    // Shift+1..4: chip type selection (works even in input)
     if (e.shiftKey && e.key >= "1" && e.key <= "4") {
       const idx = Number(e.key) - 1;
       if (idx < chipTypeKeys.length) {
@@ -87,7 +91,7 @@
         return;
       }
     }
-
+    if (!sim.frames.length) return;
     if (
       (e.target as HTMLElement).tagName === "INPUT" ||
       (e.target as HTMLElement).tagName === "SELECT" ||
@@ -111,15 +115,80 @@
       else if (sim.selectedChipType) sim.selectChipType(null);
     }
   }
+
+  function onDrop(e: DragEvent) {
+    e.preventDefault();
+    dragover = false;
+    if (e.dataTransfer?.files.length) sim.handleFile(e.dataTransfer.files[0]);
+  }
+
+  function onFileChange(e: Event) {
+    const input = e.target as HTMLInputElement;
+    if (input.files?.length) sim.handleFile(input.files[0]);
+    input.value = "";
+  }
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
+<!-- svelte-ignore a11y_click_events_have_key_events -->
 <div onmousemove={handleMouseMove} onclick={handleClick}>
-  <HomeScreen />
-  <Header dev={true} />
-  {#if sim.selectedCluster}
+  <Header />
+  {#if !sim.frames.length}
+    <div id="home">
+      <div class="home-panel">
+        <section class="home-card" style="grid-column: 1 / -1;">
+          <h2>Replay a JSONL file</h2>
+          <p>
+            Drop a <code>.jsonl</code> trace from the simulator, live snapshot
+            store, or a recorded binder session. Or pass
+            <code>?session=URL</code>
+            or <code>?scenario=NAME</code> in the address bar.
+          </p>
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div
+            class="drop-target"
+            class:dragover
+            ondragenter={(e) => {
+              e.preventDefault();
+              dragover = true;
+            }}
+            ondragover={(e) => {
+              e.preventDefault();
+              dragover = true;
+            }}
+            ondragleave={(e) => {
+              e.preventDefault();
+              dragover = false;
+            }}
+            ondrop={onDrop}
+          >
+            <div>
+              <div style="font-weight:600; margin-bottom:8px;">
+                Drop file here
+              </div>
+              <div
+                style="font-size:13px; color:var(--text-dim); margin-bottom:16px;"
+              >
+                or
+              </div>
+              <button class="btn" onclick={() => fileInput.click()}
+                >Choose file</button
+              >
+            </div>
+          </div>
+          <input
+            type="file"
+            accept=".jsonl,.json,.txt"
+            hidden
+            bind:this={fileInput}
+            onchange={onFileChange}
+          />
+        </section>
+      </div>
+    </div>
+  {:else if sim.selectedCluster}
     <div class="cluster-drill">
       <div class="cluster-drill-bar">
         <button class="cluster-back" onclick={() => sim.selectCluster(null)}
@@ -142,7 +211,6 @@
   {:else}
     <ScaleView />
   {/if}
-  <GeneratorDrawer />
 </div>
 
 <div

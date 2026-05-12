@@ -30,14 +30,15 @@ spec:
                 ]
             - name: GENERATOR_URL
               value: http://load-generator:8100
-            # Production UI lands directly on the live view.  Setting
-            # this picks the live-only prod JS bundle (index.html) and
-            # locks down the dev bundle (dev.html: chooser, replay,
-            # scenarios, generator) — its entry HTML and every dev URL
-            # return 404.  Unset locally (`npm run dev`, `uv run
-            # scheduler-ui`) so the dev bundle remains the SPA entry.
-            - name: UI_LANDING_PATH
-              value: /live
+            # Customer install: only the customer UI at `/` is reachable.
+            # Every /dev/* URL (chooser, replay, generator) and every
+            # dev-only handler (/api/solvers, /api/solve, /scenarios,
+            # /api/generator/config, /state/config.json, /api/jobs) 404
+            # server-side.  Unset locally (`npm run dev`, `uv run
+            # scheduler-ui`, `docker compose up`) so the dev tools come
+            # back.
+            - name: UI_PRODUCTION
+              value: "1"
             - name: PORT
               value: "8000"
             - name: SENTRY_DSN

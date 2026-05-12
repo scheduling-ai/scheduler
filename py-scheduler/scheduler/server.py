@@ -35,26 +35,23 @@ STATE_DIR = Path(os.environ.get("LOOP_RUNNER_STATE_DIR", "/data/live-state"))
 BRIDGE_URL = os.environ.get("BRIDGE_URL", "").rstrip("/") or None
 GENERATOR_URL = os.environ.get("GENERATOR_URL", "").rstrip("/") or None
 
-# Where bare `/` resolves to in production installs. Setting it picks
-# the production UI bundle (index.html: live-only, no chooser) and
-# locks down the dev bundle (dev.html: chooser + replay + scenarios +
-# generator) — `/dev.html` 404s and the SPA fallback narrows to just
-# the configured landing surface, so any other dev URL also 404s
-# instead of booting a half-broken UI. When unset (local dev) the dev
-# bundle is the SPA entry, so `/`, `/replay`, `/generator`, and
-# `/scenarios/<name>` all serve dev.html and let its router dispatch.
-UI_LANDING_PATH = os.environ.get("UI_LANDING_PATH", "").strip() or None
+# Customer installs set this; it 404s everything under /dev/ (the
+# chooser, replay, generator bundles) so the only reachable surface is
+# the customer UI at /.  Unset locally and the dev bundles are served
+# normally.
+UI_PRODUCTION = bool(os.environ.get("UI_PRODUCTION", "").strip())
 
-if UI_LANDING_PATH:
-    # Production: prod bundle is the only customer-visible surface.
-    SPA_ENTRY = "/index.html"
-    SPA_ROUTES = {UI_LANDING_PATH}
-else:
-    # Local dev: dev bundle owns SPA routing — chooser + every dev
-    # tool surface. /index.html stays a real file in dist/ so the
-    # prod bundle is inspectable without restarting the server.
-    SPA_ENTRY = "/dev.html"
-    SPA_ROUTES = {"/", "/live", "/replay", "/generator"}
+# Dev entry HTML files in dist/.  Mapped to their canonical URL plus
+# the no-trailing-slash variant so /dev and /dev/ both work without a
+# 301 round-trip.  Order isn't significant — exact-match only.
+DEV_ENTRY_PATHS = {
+    "/dev": "dev/index.html",
+    "/dev/": "dev/index.html",
+    "/dev/replay": "dev/replay/index.html",
+    "/dev/replay/": "dev/replay/index.html",
+    "/dev/generator": "dev/generator/index.html",
+    "/dev/generator/": "dev/generator/index.html",
+}
 
 
 def _load_bridge_sources() -> list[dict]:
@@ -99,6 +96,24 @@ def _load_bridge_sources() -> list[dict]:
 
 BRIDGE_SOURCES = _load_bridge_sources()
 BRIDGE_SOURCES_BY_NAME = {s["name"]: s for s in BRIDGE_SOURCES}
+
+
+def _is_dev_only_path(path: str) -> bool:
+    """Routes that exist only to back the dev tools (chooser, replay,
+    generator).  In production installs UI_PRODUCTION gates them off
+    even though the underlying handlers still exist server-side.
+
+    The customer UI itself only ever calls /api/sources and
+    /state/latest-<name>.json, so the gate covers everything else."""
+    if path == "/dev" or path.startswith("/dev/"):
+        return True
+    if path.startswith("/scenarios/") or path == "/scenarios/index.json":
+        return True
+    if path == "/state/config.json":
+        return True
+    if path in ("/api/solvers", "/api/solve", "/api/generator/config", "/api/jobs"):
+        return True
+    return False
 
 
 def _json_response(
@@ -166,6 +181,10 @@ def make_handler(
 
         def do_GET(self):
             path = self.path.split("?")[0]
+
+            if UI_PRODUCTION and _is_dev_only_path(path):
+                self.send_error(404)
+                return
 
             if path.startswith("/state/"):
                 rel = path[len("/state/") :]
@@ -240,32 +259,29 @@ def make_handler(
                 _json_response(self, payload)
                 return
 
-            # Production landing redirect + dev-bundle gate.  When
-            # UI_LANDING_PATH is set, `/` and `/index.html` 302 to the
-            # configured surface, and the dev bundle's entry HTML is
-            # 404'd so customers can't reach the chooser by URL.
-            if UI_LANDING_PATH:
-                if path in ("/", "/index.html"):
-                    self.send_response(302)
-                    self.send_header("Location", UI_LANDING_PATH)
-                    self.end_headers()
-                    return
-                if path == "/dev.html":
+            # Dev surfaces (chooser, replay, generator) live under /dev/.
+            # In production installs every /dev path 404s; in local-dev
+            # the matching entry HTML is served (no SPA fallback needed —
+            # each app is its own page).
+            if path == "/dev" or path.startswith("/dev/"):
+                if UI_PRODUCTION:
                     self.send_error(404)
                     return
-
-            # /scenarios/* is a dev-only client-side route. Gate it off
-            # the same env knob that gates the SPA route set — production
-            # installs return a clean 404 for scenario URLs.
-            if path in SPA_ROUTES or (not UI_LANDING_PATH and path.startswith("/scenarios/")):
-                self.path = SPA_ENTRY
-                super().do_GET()
+                entry = DEV_ENTRY_PATHS.get(path)
+                if entry is not None:
+                    self._serve_file(static_dir / entry, "text/html")
+                    return
+                self.send_error(404)
                 return
 
             super().do_GET()
 
         def do_POST(self):
             path = self.path.split("?")[0]
+
+            if UI_PRODUCTION and _is_dev_only_path(path):
+                self.send_error(404)
+                return
 
             if path == "/api/solve":
                 body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode("utf-8")

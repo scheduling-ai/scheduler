@@ -15,7 +15,7 @@ import pytest
 def _reload_server(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -> None:
     """Reimport scheduler.server with the given env vars set.
 
-    Env-driven config (BRIDGE_SOURCES / BRIDGE_URL / UI_LANDING_PATH) is
+    Env-driven config (BRIDGE_SOURCES / BRIDGE_URL / UI_PRODUCTION) is
     read at module import; reloading rebuilds those constants from the
     new env.
 
@@ -24,7 +24,7 @@ def _reload_server(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -> None
     srv`` so the type checker resolves module attributes (a return
     value typed as ``ModuleType`` would be opaque).
     """
-    for key in ("BRIDGE_SOURCES", "BRIDGE_URL", "UI_LANDING_PATH"):
+    for key in ("BRIDGE_SOURCES", "BRIDGE_URL", "UI_PRODUCTION"):
         monkeypatch.delenv(key, raising=False)
     for k, v in env.items():
         monkeypatch.setenv(k, v)
@@ -128,32 +128,51 @@ def test_no_env_means_no_sources(monkeypatch: pytest.MonkeyPatch) -> None:
     assert srv.BRIDGE_SOURCES == []
 
 
-def test_landing_path_unset_serves_dev_bundle(
+def test_ui_production_unset_means_dev_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No UI_LANDING_PATH = local-dev install: SPA fallback points at
-    the dev bundle (chooser + replay + generator + scenarios), and
-    every dev-tool URL routes there so the dev bundle's router can
-    dispatch."""
+    """No UI_PRODUCTION = local-dev install: dev tooling URLs serve
+    their entry HTML, and every dev-only handler stays reachable."""
     _reload_server(monkeypatch, {})
     from scheduler import server as srv
 
-    assert srv.UI_LANDING_PATH is None
-    assert srv.SPA_ENTRY == "/dev.html"
-    assert srv.SPA_ROUTES == {"/", "/live", "/replay", "/generator"}
+    assert srv.UI_PRODUCTION is False
+    for path in (
+        "/dev",
+        "/dev/replay",
+        "/api/solvers",
+        "/api/solve",
+        "/scenarios/index.json",
+    ):
+        assert srv._is_dev_only_path(path), f"{path} should be dev-only"
 
 
-def test_landing_path_serves_prod_bundle_only(
+def test_ui_production_set_gates_dev_paths(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """UI_LANDING_PATH set = production install: SPA serves only the
-    prod bundle and only at the landing surface. `/` and `/index.html`
-    302 to the landing path; /replay, /generator, /scenarios, and
-    /dev.html fall through to a 404 instead of booting a broken UI or
-    exposing the dev bundle."""
-    _reload_server(monkeypatch, {"UI_LANDING_PATH": "/live"})
+    """UI_PRODUCTION set = customer install: the customer UI at `/` and
+    its live-data hooks (`/api/sources`, `/state/latest-*.json`) stay
+    reachable, but every dev path returns 404 server-side."""
+    _reload_server(monkeypatch, {"UI_PRODUCTION": "1"})
     from scheduler import server as srv
 
-    assert srv.UI_LANDING_PATH == "/live"
-    assert srv.SPA_ENTRY == "/index.html"
-    assert srv.SPA_ROUTES == {"/live"}
+    assert srv.UI_PRODUCTION is True
+
+    customer_paths = ("/", "/index.html", "/api/sources", "/state/latest-x.json")
+    for p in customer_paths:
+        assert not srv._is_dev_only_path(p), f"{p} must stay reachable for customers"
+
+    dev_paths = (
+        "/dev",
+        "/dev/replay",
+        "/dev/generator",
+        "/api/solvers",
+        "/api/solve",
+        "/api/generator/config",
+        "/api/jobs",
+        "/scenarios/foo.jsonl",
+        "/scenarios/index.json",
+        "/state/config.json",
+    )
+    for p in dev_paths:
+        assert srv._is_dev_only_path(p), f"{p} should be dev-only"

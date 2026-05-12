@@ -1,8 +1,10 @@
 <script lang="ts">
-  import { sim } from "../lib/state.svelte";
+  import { getPlayback } from "../lib/context";
   import { chipColor } from "../lib/api";
 
   let { filterCluster = null }: { filterCluster?: string | null } = $props();
+
+  const sim = getPlayback();
 
   const visibleClusters = $derived(
     filterCluster
@@ -13,11 +15,7 @@
   const clusterCaption = $derived.by(() => {
     const frame = sim.displayFrame;
     if (!frame) return "";
-    const seq =
-      sim.currentMode === "live"
-        ? `seq ${frame.seq || 0}`
-        : `t=${sim.currentFrameIdx}`;
-    return `Cluster state at ${seq} \u2014 solver called with this state as input`;
+    return `Cluster sim at ${sim.tickLabel(sim.currentFrameIdx, frame)} — solver called with this sim as input`;
   });
 </script>
 
@@ -26,9 +24,9 @@
 {/if}
 
 {#if !sim.parsedView}
-  <div class="empty-state">Load a replay or connect to the live simulator.</div>
+  <div class="empty-sim">Load a replay or connect to the live simulator.</div>
 {:else if !visibleClusters.length}
-  <div class="empty-state">No cluster data in this frame.</div>
+  <div class="empty-sim">No cluster data in this frame.</div>
 {:else}
   {#each visibleClusters as cluster}
     <section class="cluster">

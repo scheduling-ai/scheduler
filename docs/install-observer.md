@@ -142,13 +142,14 @@ namespace name. A complete, applyable manifest is in
    kubectl -n your-namespace port-forward svc/your-ui 8000:80
    ```
 
-   then open <http://localhost:8000>. The page lands directly on the live
-   cluster view. The chooser/scenario/replay surfaces from local
-   development are in a separate JS bundle that the production image
-   builds but the UI server refuses to serve when `UI_LANDING_PATH=/live`
-   is set (which the example manifest below does): the dev bundle's
-   entry HTML 404s and every dev URL (`/replay`, `/generator`,
-   `/scenarios/*`, `/dev.html`) returns 404 cleanly.
+   then open <http://localhost:8000>. The page is the customer UI — a
+   live cluster view, nothing else. The dev tooling (scenario replayer,
+   fake-job generator, chooser landing page) is built as separate JS
+   bundles under `/dev/*`. When the example manifest below sets
+   `UI_PRODUCTION=1`, the UI server 404s every `/dev/*` URL and every
+   dev-only API (`/api/solvers`, `/api/solve`, `/api/generator/config`,
+   `/scenarios/*`, `/state/config.json`, `/api/jobs`). Customers see
+   only the customer UI.
 
 To expose the UI to users without `kubectl port-forward`, see the next
 section. Do not skip it.
@@ -193,13 +194,13 @@ Two things to know about what the UI surfaces:
 1. `/snapshot` returns all workload names, namespaces, container resource
    requests, and node placement. No env-var values, no Secret contents,
    no log lines.
-2. The production UI is built as a separate JS bundle from the
+2. The customer UI is built as its own JS bundle, separate from the
    developer tooling (replay viewer, scenario picker, fake-job
-   generator). With `UI_LANDING_PATH=/live` the server 404s the dev
-   bundle's entry HTML and the dev-only paths (`/replay`,
-   `/generator`, `/scenarios`, `/dev.html`), so customers can't reach
-   them by URL. The dev bundle's JS chunk ships in the image but
-   nothing loads it.
+   generator). With `UI_PRODUCTION=1` the server 404s every `/dev/*`
+   URL and every dev-only API (`/api/solvers`, `/api/solve`,
+   `/api/generator/config`, `/scenarios/*`, `/state/config.json`,
+   `/api/jobs`), so customers can't reach them by URL.  The dev
+   bundles ship in the image but nothing loads or serves them.
 
 The bridge itself accepts no inbound requests except `GET /snapshot`
 on its HTTP port. Outbound, it talks to `kubernetes.default.svc` (the
@@ -408,8 +409,8 @@ spec:
             - name: BRIDGE_SOURCES
               value: |
                 [{"name":"observed","label":"Cluster","url":"http://your-bridge:8080"}]
-            - name: UI_LANDING_PATH
-              value: /live
+            - name: UI_PRODUCTION
+              value: "1"
             - name: PORT
               value: "8000"
           ports:

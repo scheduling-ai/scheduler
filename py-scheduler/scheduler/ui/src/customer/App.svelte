@@ -1,14 +1,16 @@
 <script lang="ts">
-  // Production shell: live-only.  No chooser, no scenario replay, no
-  // fake-job generator — those live in AppDev.svelte / dev.html and
-  // never enter this bundle's dependency graph.  initFromUrl's URL-
-  // dispatch is replaced by a direct bootstrapLive so the prod build
-  // doesn't fetch /scenarios/index.json at all.
-  import { sim } from "./lib/state.svelte";
-  import { escapeHtml, chipColor } from "./lib/api";
-  import Header from "./components/Header.svelte";
-  import ClusterGrid from "./components/ClusterGrid.svelte";
-  import ScaleView from "./components/ScaleView.svelte";
+  // Customer UI: live cluster view, nothing else.  All dev surfaces
+  // (chooser, replay, scenarios, fake-job generator) live under
+  // src/dev/ and ship as separate Vite bundles — none of their JS
+  // enters this bundle's dependency graph.
+  import { LiveState } from "../lib/live.svelte";
+  import { setPlaybackContext } from "../lib/context";
+  import { escapeHtml, chipColor } from "../lib/api";
+  import Header from "./Header.svelte";
+  import ClusterGrid from "../components/ClusterGrid.svelte";
+  import ScaleView from "../components/ScaleView.svelte";
+
+  const sim = setPlaybackContext(new LiveState());
 
   let tooltipVisible = $state(false);
   let tooltipX = $state(0);
@@ -21,17 +23,9 @@
     document.addEventListener("pointerup", handler);
     return () => document.removeEventListener("pointerup", handler);
   });
+
   $effect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const src = params.get("source") || params.get("scheduler");
-    if (src) sim.liveSource = src;
-    Promise.all([sim.loadSolvers(), sim.loadLiveSources()])
-      .then(() =>
-        sim.bootstrapLive(
-          params.has("frame") ? Number(params.get("frame")) : null,
-        ),
-      )
-      .catch((e: any) => sim.showError(e.message));
+    sim.initFromUrl().catch((e: any) => sim.showError(e.message));
   });
 
   function handleMouseMove(e: MouseEvent) {
@@ -126,6 +120,7 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
+<!-- svelte-ignore a11y_click_events_have_key_events -->
 <div onmousemove={handleMouseMove} onclick={handleClick}>
   <Header />
   {#if sim.selectedCluster}

@@ -1,9 +1,11 @@
 <script lang="ts">
-  import { sim } from "../lib/state.svelte";
+  import { getPlayback } from "../lib/context";
   import { chipColor } from "../lib/api";
   import type { Workload } from "../lib/types";
 
   let { workload }: { workload: Workload } = $props();
+
+  const sim = getPlayback();
 
   function priDisplay(pri: number): {
     label: string;

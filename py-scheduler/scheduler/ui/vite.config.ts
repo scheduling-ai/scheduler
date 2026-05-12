@@ -2,32 +2,35 @@ import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { resolve } from "node:path";
 
-// Two HTML entry points share src/ but produce separate bundles:
+// Four HTML entry points, four bundles.  The customer UI is the only
+// thing that ships to customer installs; the rest are reachable only
+// under /dev/ in dev/internal deployments and 404 in production.
 //
-//   index.html  → main.ts     → App.svelte     (production: live-only,
-//                                                no chooser, no replay,
-//                                                no fake-job generator)
-//   dev.html    → main-dev.ts → AppDev.svelte  (dev tools: chooser,
-//                                                replay, scenarios,
-//                                                generator)
+//   index.html              → src/customer/main.ts        (LiveState)
+//   dev/index.html          → src/dev/chooser/main.ts     (no state)
+//   dev/replay/index.html   → src/dev/replay/main.ts      (ReplayState)
+//   dev/generator/index.html → src/dev/generator/main.ts  (GeneratorState)
 //
-// The dev bundle's JS never enters the prod bundle's dependency graph,
-// so a customer can't navigate to /replay or trigger the generator
-// just by typing the URL. Server-side gating of /dev.html is a separate
-// concern handled by the Python server's UI_LANDING_PATH logic.
+// Shared rendering components (ClusterGrid, ScaleView, …) live in
+// src/components/ and read their playback state from a Svelte context
+// each app populates at mount.  No dev code enters the customer bundle.
 export default defineConfig({
   plugins: [svelte()],
   build: {
     rollupOptions: {
       input: {
-        main: resolve(__dirname, "index.html"),
-        dev: resolve(__dirname, "dev.html"),
+        customer: resolve(__dirname, "index.html"),
+        chooser: resolve(__dirname, "dev/index.html"),
+        replay: resolve(__dirname, "dev/replay/index.html"),
+        generator: resolve(__dirname, "dev/generator/index.html"),
       },
     },
   },
   server: {
     proxy: {
       "/api": "http://localhost:8000",
+      "/state": "http://localhost:8000",
+      "/scenarios": "http://localhost:8000",
     },
   },
 });

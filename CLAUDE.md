@@ -9,7 +9,7 @@ Multi-cluster GPU job scheduler.
 - `scripts/` — Dev tooling (kind cluster setup)
 - `deploy/` — K8s manifests and kind config
 - `docs/` — Design docs (see `docs/CATALOGUE.md`). If `docs/private/` exists, check `docs/private/CATALOGUE.md` too.
-- `py-scheduler/scheduler/ui/` — Svelte 5 + Vite browser UI. Two HTML entry points share `src/`: `index.html` → prod (live-only, what customers see), `dev.html` → dev tools (chooser, replay, scenarios, generator). Production gates the dev bundle via `UI_LANDING_PATH=/live` on the UI server.
+- `py-scheduler/scheduler/ui/` — Svelte 5 + Vite browser UI. Four HTML entry points, one per app: `index.html` is the customer UI (live cluster view, the only surface customers see); `dev/index.html` is a chooser landing page; `dev/replay/index.html` is the scenario/JSONL replayer; `dev/generator/index.html` configures the fake-job generator. Shared rendering components in `src/components/` are context-driven, so each app instantiates its own state class without leaking into the others. Production sets `UI_PRODUCTION=1` on the UI server, which 404s every `/dev/*` URL and every dev-only API.
 
 ## Simulator and UI
 
@@ -109,6 +109,6 @@ bridge instance; switching the dropdown switches the snapshot source.
 
 ## Debugging the UI
 
-- Build and run locally with `docker compose up -d --build`, then open http://localhost:8000. The chooser lives at http://localhost:8000/dev.html — `/` always serves the production bundle.
+- Build and run locally with `docker compose up -d --build`, then open http://localhost:8000 for the customer UI or http://localhost:8000/dev/ for the dev chooser (which links to replay, generator, and the customer view).
 - Use the `/screenshot` skill to take Playwright screenshots of the running UI and verify visual changes.
-- For dev iteration without Docker: `npm run dev` from `py-scheduler/scheduler/ui/` starts a Vite dev server with API proxy to `localhost:8000`. Vite serves both entries; hit `/dev.html` for the chooser bundle.
+- For dev iteration without Docker: `npm run dev` from `py-scheduler/scheduler/ui/` starts a Vite dev server with API/state/scenarios proxied to `localhost:8000`. All four entries are served; hit `/`, `/dev/`, `/dev/replay/`, or `/dev/generator/` directly.
