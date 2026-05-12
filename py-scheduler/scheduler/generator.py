@@ -29,7 +29,11 @@ log = logging.getLogger(__name__)
 @dataclass
 class GeneratorConfig:
     seed: int = 7
-    arrival_rate: float = 0.15
+    # Tuned against the demo cluster (8 nodes × varying chips per pool):
+    # at avg 4.6 chips per replica and 25s runtime, 1.5 jobs/sec leaves
+    # H100/H200 pools at ~85% utilisation so bursts produce visible
+    # pending in the UI without saturating the rest of the cluster.
+    arrival_rate: float = 1.5
     burst_factor: float = 1.4
     quota_weights: dict[str, float] = field(
         default_factory=lambda: {
